@@ -1,0 +1,23 @@
+car_family,vehicle_name,region_scope,region,sopm,eop,platform,current_sdp,target_sdp,migration_dependency,migration_readiness,tcu_generation,architecture,ota_capability,fota_ivi_capability,eea_available,adas_available,milestone_cm,milestone_im,milestone_pm,launch_volume,powertrain,double_life
+Peugeot 3008,Peugeot 3008,ROS,EU,2026-06-01,2032-12-01,EMP2,GSDP,SSDP,SSDP,on_track,T4,NC,True,True,True,True,2025-11-15,2026-02-10,2026-04-20,125000,BEV,False
+Peugeot 3008,Peugeot 3008,IPZ,China,2026-08-01,2032-12-01,EMP2,GSDP,SSDP,SSDP,on_track,T4,ATB4S,True,True,True,True,2025-12-10,2026-03-08,2026-05-10,98000,BEV,False
+Jeep Compass,Jeep Compass EV,ROS,EU,2026-10-01,2033-06-01,BVH1,CVMP,SSDP,SSDP,late,T4,NC,True,True,True,True,2026-02-18,2026-05-12,2026-08-01,112000,BEV,True
+Jeep Compass,Jeep Compass EV,ROS,MEA,2027-01-01,2033-06-01,BVH1,CVMP,SSDP,SSDP,late,T3,VP4R,False,False,False,True,2026-03-10,2026-06-20,2026-10-05,52000,BEV,True
+Citroen C3 Aircross,C3 Aircross,ROS,SAM,2026-04-01,2031-09-01,CMP,GSDP,SPACE,SSDP,not_ready,T3,TBM 2.0,False,False,False,False,2025-10-01,2026-01-20,2026-03-10,76000,FLEX,True
+Citroen C3 Aircross,C3 Aircross,IPZ,India,2026-07-01,2031-09-01,CMP,GSDP,SPACE,SSDP,late,T3,TBM 2.0,False,False,False,False,2025-12-05,2026-03-01,2026-05-25,88000,ICE,True
+Ram ProMaster,Ram ProMaster,ROS,NA,2027-02-01,2034-03-01,legacy,LEGACY,SSDP,SSDP,late,T2,GSDP,False,False,False,False,2026-04-15,2026-08-01,2026-11-12,91000,ICE,True
+Fiat Pulse,Fiat Pulse,ROS,SAM,2026-09-01,2031-12-01,legacy,GSDP,GSDP,SSDP,not_ready,T2,VP4R,False,False,False,False,2026-01-09,2026-05-22,,67000,HYBRID,False
+Maserati Levante,Levante,ROS,EU,2027-06-01,2033-12-01,Giorgio,CVMP,SSDP,SSDP,on_track,T4,NC,True,True,True,True,2026-10-01,2027-01-15,2027-03-18,24000,PHEV,False
+Maserati Levante,Levante,IPZ,China,2027-09-01,2033-12-01,Giorgio,CVMP,SSDP,SSDP,on_track,T4,ATB4S,True,True,True,True,2026-11-12,2027-02-02,2027-04-25,18000,PHEV,False
+Peugeot 208,Peugeot 208,ROS,EU,2026-05-01,2031-11-01,EMP2,GSDP,SSDP,SSDP,on_track,T3,NC,True,True,True,True,2025-09-15,2025-12-08,2026-02-14,149000,ICE,False
+Peugeot 208,Peugeot 208,ROS,MEA,2026-11-01,2031-11-01,EMP2,GSDP,SSDP,SSDP,late,T3,VP4R,False,True,True,False,2026-02-07,2026-05-19,2026-08-22,41000,ICE,False
+DS7,DS7,IPZ,China,2026-12-01,2032-06-01,EMP2,CVMP,SSDP,SSDP,on_track,T4,ATB4S,True,True,True,True,2026-02-28,2026-06-15,2026-09-05,36000,PHEV,False
+Opel Frontera,Frontera,ROS,EU,2026-03-01,2031-07-01,CMP,GSDP,SSDP,SSDP,on_track,T3,NC,True,True,True,False,2025-08-10,2025-11-15,2026-01-20,104000,BEV,False
+Jeep Renegade,Renegade,ROS,SAM,2026-08-01,2032-04-01,BVH1,CVMP,SSDP,SSDP,late,T3,VP4R,False,False,False,False,2026-01-20,2026-04-28,2026-07-12,93000,HYBRID,True
+Jeep Renegade,Renegade,IPZ,India,2026-10-01,2032-04-01,BVH1,CVMP,SSDP,SSDP,late,T3,ATB4S,True,False,False,False,2026-02-11,2026-05-30,2026-08-19,58000,HYBRID,True
+Fiat Ducato,Ducato,ROS,MEA,2027-03-01,2034-09-01,legacy,LEGACY,SSDP,SSDP,late,T2,GSDP,False,False,False,False,2026-05-14,2026-08-26,2026-12-02,45000,ICE,True
+Citroen eC3,eC3,IPZ,India,2026-04-01,2030-12-01,CMP,GSDP,SSDP,SSDP,on_track,T3,ATB4S,True,True,True,False,2025-10-10,2026-01-10,2026-03-05,72000,BEV,False
+Alfa Stelvio,Stelvio,ROS,EU,2027-01-01,2033-10-01,Giorgio,CVMP,SPACE,SSDP,late,T4,NC,True,True,True,True,2026-03-18,2026-07-01,2026-10-10,57000,PHEV,False
+Ram 1200,Ram 1200,ROS,MEA,2026-06-01,2032-02-01,legacy,LEGACY,CVMP,SSDP,not_ready,T2,TBM 2.0,False,False,False,False,2025-12-12,2026-03-14,,62000,DIESEL,False
+Peugeot 408,Peugeot 408,IPZ,ASEAN,2027-02-01,2033-08-01,EMP2,GSDP,SSDP,SSDP,on_track,T4,ATB4S,True,True,True,True,2026-05-20,2026-08-10,2026-11-15,69000,HEV,False
+Fiat Panda,Panda,ROS,EU,2026-05-01,2030-10-01,CMP,GSDP,SSDP,SSDP,on_track,T3,NC,True,True,True,False,2025-09-02,2025-12-18,2026-02-25,97000,BEV,False
