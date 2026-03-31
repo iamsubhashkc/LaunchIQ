@@ -20,8 +20,8 @@ export function ClarificationBox({ questions, onSubmit, loading }) {
     <section className="panel clarification-panel">
       <div className="panel-header">
         <div>
-          <h2>Clarification Needed</h2>
-          <p>LaunchIQ pauses execution instead of guessing.</p>
+          <h2>Clarification Required</h2>
+          <p>One additional input is needed before the answer can be completed.</p>
         </div>
       </div>
 

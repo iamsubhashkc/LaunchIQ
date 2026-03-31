@@ -7,6 +7,8 @@ import duckdb
 import pandas as pd
 
 from .data_loader import LaunchDataLoader
+from .milestone_store import MilestoneStore
+from .milestones import ANCHOR_LABELS, MILESTONE_OFFSETS, derive_milestone_date
 from .models import ExecutionExplanation, QueryPlan
 
 
@@ -34,19 +36,32 @@ class ExecutionResult:
 
 
 class ExecutionEngine:
-    def __init__(self, data_loader: LaunchDataLoader | None = None) -> None:
+    def __init__(
+        self,
+        data_loader: LaunchDataLoader | None = None,
+        milestone_store: MilestoneStore | None = None,
+    ) -> None:
         self.data_loader = data_loader or LaunchDataLoader()
+        self.milestone_store = milestone_store or MilestoneStore()
 
     def execute(self, plan: QueryPlan) -> ExecutionResult:
         loaded = self.data_loader.load()
         dataframe = loaded.events_frame.copy() if plan.data_view == "launch_event" else loaded.frame.copy()
+        if plan.milestone_anchor and plan.milestone_columns:
+            dataframe = self._apply_derived_milestones(dataframe, plan.milestone_anchor, plan.milestone_columns)
+        if plan.milestone_deliverable_codes:
+            dataframe = self._apply_milestone_deliverables(dataframe, plan.milestone_deliverable_codes)
         table_name = "launch_events" if plan.data_view == "launch_event" else "launch_programs"
 
         connection = duckdb.connect()
         connection.register(table_name, dataframe)
         where_clauses, parameters, filter_notes = self._build_where(plan)
         sql = self._build_sql(plan, where_clauses, table_name)
-        result = connection.execute(sql, parameters).fetchdf()
+        execution_parameters = parameters
+        if plan.intent == "distribution" and table_name == "launch_programs" and plan.group_by[:2] == ["region_logic", "region_value"]:
+            repeat_count = 2 if plan.region_scope in {"ANY", "BOTH"} else 1
+            execution_parameters = parameters * repeat_count
+        result = connection.execute(sql, execution_parameters).fetchdf()
         connection.close()
 
         answer = self._shape_answer(plan, result)
@@ -58,9 +73,59 @@ class ExecutionEngine:
                 "List and count intents use DISTINCT semantics for the active view.",
                 f"Source dataset: {loaded.source_kind} ({loaded.source_path.name}).",
                 f"Execution view: {plan.data_view}.",
+                *(
+                    [
+                        f"Derived milestones anchored to {ANCHOR_LABELS[plan.milestone_anchor]} using fixed week offsets and nearest-Monday rounding."
+                    ]
+                    if plan.milestone_anchor and plan.milestone_columns
+                    else []
+                ),
+                *(
+                    [f"Attached milestone deliverables from the updateable milestone catalog for {', '.join(plan.milestone_deliverable_codes)}."]
+                    if plan.milestone_deliverable_codes
+                    else []
+                ),
             ],
         )
         return ExecutionResult(answer_type=plan.intent, answer=answer, explanation=explanation)
+
+    def _apply_derived_milestones(
+        self,
+        dataframe: pd.DataFrame,
+        anchor_field: str,
+        milestone_columns: list[str],
+    ) -> pd.DataFrame:
+        if anchor_field not in dataframe.columns:
+            return dataframe
+
+        enriched = dataframe.copy()
+        anchor_series = pd.to_datetime(enriched[anchor_field], errors="coerce")
+        enriched.loc[:, "milestone_anchor_date"] = anchor_series
+        enriched.loc[:, "milestone_anchor_label"] = ANCHOR_LABELS[anchor_field]
+
+        for column in milestone_columns:
+            offset_weeks = MILESTONE_OFFSETS.get(column)
+            if offset_weeks is None:
+                continue
+            enriched.loc[:, column] = anchor_series.apply(lambda value: derive_milestone_date(value, offset_weeks))
+        return enriched
+
+    def _apply_milestone_deliverables(self, dataframe: pd.DataFrame, milestone_codes: list[str]) -> pd.DataFrame:
+        deliverables = self.milestone_store.get_deliverables(milestone_codes)
+        if not deliverables:
+            return dataframe
+
+        merged = dataframe.copy()
+        head = deliverables[0]
+        merged.loc[:, "deliverable_milestone_code"] = head.get("milestone_code", "")
+        merged.loc[:, "deliverable_milestone_label"] = head.get("milestone_label", "")
+        merged.loc[:, "deliverable_governance_communication"] = head.get("governance_communication", "")
+        merged.loc[:, "deliverable_readiness_objectives"] = head.get("readiness_objectives", "")
+        merged.loc[:, "deliverable_timelines"] = head.get("timelines", "")
+        merged.loc[:, "deliverable_risks"] = head.get("risks", "")
+        merged.loc[:, "deliverable_escalation_path"] = head.get("escalation_path", "")
+        merged.loc[:, "deliverable_ownership"] = head.get("ownership", "")
+        return merged
 
     def _build_where(self, plan: QueryPlan) -> tuple[list[str], list[Any], list[dict[str, Any]]]:
         where_clauses = ["1 = 1"]
@@ -218,7 +283,7 @@ class ExecutionEngine:
             "has_mca2",
         }:
             return f"BOOL_OR({column}) AS {column}"
-        if column in {"sopm", "mca_sopm", "mca2_sopm", "launch_date"}:
+        if column in {"sopm", "mca_sopm", "mca2_sopm", "launch_date", "milestone_anchor_date"}:
             return f"MIN({column}) AS {column}"
         if column == "eop":
             return "MAX(eop) AS eop"
@@ -254,4 +319,12 @@ class ExecutionEngine:
     def _shape_answer(self, plan: QueryPlan, result: pd.DataFrame) -> Any:
         if plan.intent == "count":
             return {"value": int(result.iloc[0]["value"]) if not result.empty else 0}
-        return result.fillna("").to_dict(orient="records")
+        source = result.copy()
+        formatted = result.copy().astype(object)
+        for column in source.columns:
+            if pd.api.types.is_datetime64_any_dtype(source[column]):
+                series = source[column].dt.strftime("%Y-%m-%dT%H:%M:%S").fillna("").astype(object)
+            else:
+                series = source[column].where(source[column].notna(), "").astype(object)
+            formatted.loc[:, column] = series
+        return formatted.to_dict(orient="records")

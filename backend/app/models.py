@@ -30,6 +30,9 @@ class QueryPlan(BaseModel):
     metric: str = "car_family"
     data_view: Literal["vehicle", "launch_event"] = "vehicle"
     analysis_mode: Literal["standard", "overlap"] = "standard"
+    milestone_anchor: Literal["sopm", "mca_sopm", "mca2_sopm"] | None = None
+    milestone_columns: list[str] = Field(default_factory=list)
+    milestone_deliverable_codes: list[str] = Field(default_factory=list)
     sort_by: list[str] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list)
     filters: list[PlanFilter] = Field(default_factory=list)
@@ -82,3 +85,31 @@ class FeedbackResponse(BaseModel):
     stored: bool
     record_id: str
     stored_at: datetime
+
+
+class MilestoneDeliverable(BaseModel):
+    milestone_code: str
+    milestone_label: str
+    sequence_order: int
+    governance_communication: str
+    readiness_objectives: str
+    timelines: str
+    risks: str
+    escalation_path: str
+    ownership: str
+    updated_at: datetime
+
+
+class MilestoneDeliverableUpdateRequest(BaseModel):
+    milestone_label: str | None = None
+    sequence_order: int | None = None
+    governance_communication: str | None = None
+    readiness_objectives: str | None = None
+    timelines: str | None = None
+    risks: str | None = None
+    escalation_path: str | None = None
+    ownership: str | None = None
+
+
+class MilestoneDeliverableListResponse(BaseModel):
+    items: list[MilestoneDeliverable]

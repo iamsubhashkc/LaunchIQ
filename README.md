@@ -8,6 +8,7 @@ LaunchIQ is a full-stack semantic reasoning engine that uses an LLM only for que
 - `frontend/`: React analyst workspace for query submission, answer review, clarification, and corrections.
 - `sample_lrp.xlsx`: uploaded Excel workbook used as the primary data source when present.
 - `backend/data/launch_programs.csv`: seeded fallback dataset used only when no workbook is available.
+- `backend/data/milestone_deliverables.json`: seed file for milestone governance and readiness deliverables.
 
 ## Backend
 
@@ -29,6 +30,15 @@ pytest
 - Default: heuristic planner for local testing.
 - Ollama: set `LAUNCHIQ_LLM_PROVIDER=ollama` and optionally `LAUNCHIQ_OLLAMA_MODEL`.
 - OpenAI-compatible API: set `LAUNCHIQ_LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_BASE_URL` and `OPENAI_MODEL`.
+
+### Milestone catalog
+
+Milestone deliverables are persisted in DuckDB and seeded from [backend/data/milestone_deliverables.json](/Volumes/Subhash/LaunchIQ/backend/data/milestone_deliverables.json) on first run.
+
+Endpoints:
+- `GET /milestones/deliverables`
+- `GET /milestones/deliverables/{milestone_code}`
+- `PUT /milestones/deliverables/{milestone_code}`
 
 ## Frontend
 

@@ -4,10 +4,13 @@ import json
 import os
 import re
 import urllib.request
+from functools import lru_cache
 from datetime import date
 from typing import Any
 
 from .clarification import detect_clarifications
+from .data_loader import CONNECTIVITY_COLUMNS, INFOTAINMENT_COLUMNS, LaunchDataLoader
+from .milestones import ANCHOR_LABELS, MILESTONE_COLUMN_ORDER, MILESTONE_COLUMN_TO_CODE
 from .models import PlanFilter, QueryPlan
 
 
@@ -58,10 +61,69 @@ BASE_UNSUPPORTED_PATTERNS = {
     "legacy sdp": "The uploaded LRP file does not contain stage-level SDP migration columns.",
     "double life": "The uploaded LRP file does not contain a double-life strategy flag.",
     "dual-stack": "The uploaded LRP file does not contain a double-life strategy flag.",
-    "milestone": "The uploaded LRP file does not contain CM/IM/PM milestone columns.",
-    "cm/im/pm": "The uploaded LRP file does not contain CM/IM/PM milestone columns.",
     "feature parity": "The uploaded LRP file does not contain an explicit feature parity metric.",
     "rollout complexity": "The uploaded LRP file does not contain an explicit rollout complexity metric.",
+}
+
+
+SCHEMA_MATCH_FIELDS = [
+    "brand",
+    "region_of_sales",
+    "initial_prod_zone",
+    "project_responsible_region",
+    "platform",
+    "program",
+    "powertrain",
+    "eea",
+    "ota",
+]
+
+ENTITY_MATCH_FIELDS = [
+    "car_family_code",
+    "commercial_name",
+    "car_family",
+]
+
+REGION_LIKE_FIELDS = {
+    "region_of_sales",
+    "initial_prod_zone",
+    "project_responsible_region",
+}
+
+CAR_FAMILY_FALLBACK_EXCLUSIONS = {
+    "EU",
+    "EEU",
+    "EER",
+    "MEA",
+    "IAP",
+    "NAM",
+    "SAM",
+    "CHN",
+    "MCA",
+    "MCA2",
+    "SOPM",
+    "EOP",
+    "OTA",
+    "EEA",
+    "TCU",
+}
+
+TCU_HINTS = {"tcu", "tcus", "connectivity"}
+INFOTAINMENT_HINTS = {"infotainment", "infotainments", "ivi", "headunit", "hu"}
+MILESTONE_FIELD_ALIASES = {
+    "milestone_im": [r"\bim\b"],
+    "milestone_pm": [r"\bpm\b"],
+    "milestone_cm": [r"\bcm\b"],
+    "milestone_dm": [r"\bdm\b"],
+    "milestone_shrm": [r"\bshrm\b"],
+    "milestone_x0": [r"\bx0\b"],
+    "milestone_x1": [r"\bx1\b"],
+    "milestone_sop_8": [r"\bsop[\s-]?8\b"],
+    "milestone_sop_6": [r"\bsop[\s-]?6\b"],
+    "milestone_x2": [r"\bx2\b"],
+    "milestone_sop_3": [r"\bsop[\s-]?3\b"],
+    "milestone_lrm": [r"\blrm\b"],
+    "milestone_x3": [r"\bx3\b"],
 }
 
 
@@ -135,25 +197,60 @@ class Planner:
 
     def _heuristic_plan(self, query: str) -> QueryPlan:
         lowered = query.lower()
-        analysis_year = self._extract_analysis_year(lowered)
-        data_view = self._detect_data_view(lowered)
-        intent = self._detect_intent(lowered)
-        analysis_mode = self._detect_analysis_mode(lowered)
-        group_by = self._detect_group_by(lowered, intent, data_view)
-        time_window_months = self._extract_time_window_months(lowered)
-        metric = self._detect_metric(lowered, analysis_year, data_view)
-        sort_by = self._detect_sort_by(lowered, analysis_year)
-        filters = self._detect_filters(lowered, time_window_months, analysis_year, data_view)
-        requested_columns = self._requested_columns(intent, lowered, analysis_year, data_view)
-        region_scope = self._detect_region_scope(lowered)
-        unsupported_reasons = self._detect_unsupported_reasons(lowered)
-        summary = self._summary(intent, lowered, group_by, time_window_months, analysis_year, data_view)
+        entity_filters, masked_lowered = self._detect_entity_filters(lowered)
+        analysis_year = self._extract_analysis_year(masked_lowered)
+        data_view = self._detect_data_view(masked_lowered)
+        intent = self._detect_intent(masked_lowered)
+        analysis_mode = self._detect_analysis_mode(masked_lowered)
+        should_enrich_vehicle_brief = self._should_enrich_vehicle_brief(masked_lowered)
+        group_by = self._detect_group_by(masked_lowered, intent, data_view)
+        time_window_months = self._extract_time_window_months(masked_lowered)
+        metric = self._detect_metric(masked_lowered, analysis_year, data_view)
+        sort_by = self._detect_sort_by(masked_lowered, analysis_year)
+        filters = entity_filters + self._detect_filters(masked_lowered, time_window_months, analysis_year, data_view, analysis_mode)
+        filters = self._add_stack_component_filters(masked_lowered, filters)
+        filters = self._add_schema_value_filters(masked_lowered, filters)
+        filters = self._add_fallback_car_family_filter(masked_lowered, filters)
+        milestone_columns = self._detect_milestone_columns(masked_lowered)
+        if should_enrich_vehicle_brief and not milestone_columns:
+            milestone_columns = list(MILESTONE_COLUMN_ORDER)
+        milestone_anchor = self._detect_milestone_anchor(masked_lowered) if milestone_columns else None
+        milestone_deliverable_codes = self._detect_milestone_deliverable_codes(masked_lowered, milestone_columns)
+        filters = self._add_milestone_anchor_filters(filters, milestone_anchor)
+        filters = self._dedupe_filters(filters)
+        requested_columns = self._requested_columns(
+            intent,
+            masked_lowered,
+            analysis_year,
+            data_view,
+            milestone_columns,
+            milestone_anchor,
+            milestone_deliverable_codes,
+        )
+        region_scope = self._detect_region_scope(masked_lowered)
+        unsupported_reasons = self._detect_unsupported_reasons(masked_lowered)
+        summary = self._summary(
+            intent,
+            masked_lowered,
+            group_by,
+            time_window_months,
+            analysis_year,
+            data_view,
+            milestone_anchor,
+            milestone_columns,
+        )
+
+        if milestone_anchor and not sort_by:
+            sort_by = [milestone_anchor]
 
         return QueryPlan(
             intent=intent,
             metric=metric,
             data_view=data_view,
             analysis_mode=analysis_mode,
+            milestone_anchor=milestone_anchor,
+            milestone_columns=milestone_columns,
+            milestone_deliverable_codes=milestone_deliverable_codes,
             sort_by=sort_by,
             group_by=group_by,
             filters=filters,
@@ -164,7 +261,23 @@ class Planner:
             reasoning_summary=summary,
         )
 
+    def _should_enrich_vehicle_brief(self, lowered: str) -> bool:
+        return any(
+            phrase in lowered
+            for phrase in [
+                "tell me about",
+                "details for",
+                "show launches for",
+                "what launches are planned for",
+                "which launches are planned for",
+                "when is",
+                "when does",
+            ]
+        )
+
     def _detect_data_view(self, lowered: str) -> str:
+        if self._detect_milestone_columns(lowered):
+            return "vehicle"
         if any(token in lowered for token in ["mca ", "mca2", "mca sopm", "transition launch", "design launch"]):
             return "launch_event"
         if "mca" in lowered:
@@ -240,6 +353,17 @@ class Planner:
                 ordered.append(item)
         return ordered
 
+    def _dedupe_filters(self, filters: list[PlanFilter]) -> list[PlanFilter]:
+        seen: set[tuple[str, str, str]] = set()
+        ordered: list[PlanFilter] = []
+        for item in filters:
+            key = (item.field, item.operator, json.dumps(item.value, sort_keys=True))
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+        return ordered
+
     def _extract_time_window_months(self, lowered: str) -> int | None:
         match = re.search(r"next\s+(\d+)\s*(?:-|to)?\s*(\d+)?\s*months?", lowered)
         if match:
@@ -253,6 +377,235 @@ class Planner:
     def _extract_analysis_year(self, lowered: str) -> int | None:
         match = re.search(r"\b(20\d{2})\b", lowered)
         return int(match.group(1)) if match else None
+
+    def _extract_brand(self, lowered: str) -> str | None:
+        match = re.search(r"\b([a-z0-9][a-z0-9&/-]*)\s+brand(?:'s)?\b", lowered)
+        if not match:
+            return None
+        return match.group(1).upper()
+
+    @lru_cache(maxsize=1)
+    def _schema_value_catalog(self) -> dict[str, list[str]]:
+        try:
+            frame = LaunchDataLoader().load().frame
+        except Exception:
+            return {}
+
+        catalog: dict[str, list[str]] = {}
+        for field in SCHEMA_MATCH_FIELDS:
+            if field not in frame.columns:
+                continue
+            values = sorted(
+                {
+                    str(value).strip()
+                    for value in frame[field].dropna()
+                    if str(value).strip() and str(value).strip().lower() != "unknown"
+                }
+            )
+            if not values or len(values) > 80:
+                continue
+            catalog[field] = values
+        return catalog
+
+    def _normalize_stack_label(self, value: str) -> str:
+        return (
+            value.replace(".1", "")
+            .replace(".2", "")
+            .replace("PARTNER.1", "PARTNER")
+            .replace("PARTNER.2", "PARTNER")
+            .replace("R2eX.1", "R2eX")
+        )
+
+    def _stack_aliases(self, label: str) -> set[str]:
+        normalized = self._normalize_stack_label(label)
+        lowered = normalized.lower()
+        compact = re.sub(r"[^a-z0-9]+", "", lowered)
+        aliases = {lowered, compact}
+        if lowered.endswith(" v2"):
+            aliases.add(lowered.replace(" v2", "v2"))
+        if lowered.endswith(" v1"):
+            aliases.add(lowered.replace(" v1", "v1"))
+        if " (sps)" in lowered:
+            aliases.add(lowered.replace(" (sps)", ""))
+        return {alias for alias in aliases if alias}
+
+    @lru_cache(maxsize=1)
+    def _stack_component_catalog(self) -> dict[str, list[str]]:
+        connectivity = sorted(
+            {self._normalize_stack_label(value) for value in CONNECTIVITY_COLUMNS},
+            key=lambda value: (-len(value), value),
+        )
+        infotainment = sorted(
+            {self._normalize_stack_label(value) for value in INFOTAINMENT_COLUMNS},
+            key=lambda value: (-len(value), value),
+        )
+        return {"tcu_details": connectivity, "infotainment_details": infotainment}
+
+    @lru_cache(maxsize=1)
+    def _entity_value_catalog(self) -> dict[str, list[str]]:
+        try:
+            frame = LaunchDataLoader().load().frame
+        except Exception:
+            return {}
+
+        catalog: dict[str, list[str]] = {}
+        for field in ENTITY_MATCH_FIELDS:
+            if field not in frame.columns:
+                continue
+            values = sorted(
+                {
+                    str(value).strip()
+                    for value in frame[field].dropna()
+                    if str(value).strip() and str(value).strip().lower() != "unknown"
+                },
+                key=lambda value: (-len(value), value),
+            )
+            if values:
+                catalog[field] = values
+        return catalog
+
+    def _value_mentioned(self, lowered: str, value: str) -> bool:
+        normalized = value.lower().strip()
+        if not normalized:
+            return False
+        pattern = rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])"
+        return re.search(pattern, lowered) is not None
+
+    def _find_value_spans(self, lowered: str, value: str) -> list[tuple[int, int]]:
+        normalized = value.lower().strip()
+        if not normalized:
+            return []
+        pattern = rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])"
+        return [(match.start(), match.end()) for match in re.finditer(pattern, lowered)]
+
+    def _detect_entity_filters(self, lowered: str) -> tuple[list[PlanFilter], str]:
+        candidates: list[tuple[int, int, int, int, str, str]] = []
+        priorities = {field: index for index, field in enumerate(ENTITY_MATCH_FIELDS)}
+
+        for field, values in self._entity_value_catalog().items():
+            for value in values:
+                for start, end in self._find_value_spans(lowered, value):
+                    candidates.append((-(end - start), priorities[field], start, end, field, value))
+
+        candidates.sort()
+        selected: list[tuple[int, int, str, str]] = []
+        occupied: list[tuple[int, int]] = []
+        for _, _, start, end, field, value in candidates:
+            if any(not (end <= taken_start or start >= taken_end) for taken_start, taken_end in occupied):
+                continue
+            occupied.append((start, end))
+            selected.append((start, end, field, value))
+
+        mask_chars = list(lowered)
+        filters: list[PlanFilter] = []
+        for start, end, field, value in sorted(selected, key=lambda item: item[0]):
+            for index in range(start, end):
+                mask_chars[index] = " "
+            filters.append(
+                PlanFilter(
+                    field=field,
+                    operator="=",
+                    value=value,
+                    rationale=f"Match the requested {field.replace('_', ' ')} from the uploaded LRP.",
+                )
+            )
+        return filters, "".join(mask_chars)
+
+    def _add_stack_component_filters(self, lowered: str, filters: list[PlanFilter]) -> list[PlanFilter]:
+        updated = list(filters)
+        lowered_compact = re.sub(r"[^a-z0-9]+", "", lowered)
+
+        def add_for_field(field: str, hints: set[str]) -> None:
+            if not any(hint in lowered for hint in hints):
+                return
+            existing = {
+                str(item.value).upper()
+                for item in updated
+                if item.field == field and item.operator == "contains"
+            }
+            for label in self._stack_component_catalog()[field]:
+                aliases = self._stack_aliases(label)
+                if not any(alias in lowered or alias in lowered_compact for alias in aliases):
+                    continue
+                if label.upper() in existing:
+                    continue
+                updated.append(
+                    PlanFilter(
+                        field=field,
+                        operator="contains",
+                        value=label,
+                        rationale=f"Match the requested {field.replace('_', ' ')} component from the uploaded LRP.",
+                    )
+                )
+
+        add_for_field("tcu_details", TCU_HINTS)
+        add_for_field("infotainment_details", INFOTAINMENT_HINTS)
+        return updated
+
+    def _add_schema_value_filters(self, lowered: str, filters: list[PlanFilter]) -> list[PlanFilter]:
+        existing_exact = {(item.field, item.operator, str(item.value).upper()) for item in filters}
+        updated = list(filters)
+
+        for field, values in self._schema_value_catalog().items():
+            if any(item.field == field for item in updated):
+                continue
+            if field in REGION_LIKE_FIELDS and any(item.field in REGION_LIKE_FIELDS for item in updated):
+                continue
+            matches = [value for value in values if self._value_mentioned(lowered, value)]
+            if len(matches) != 1:
+                continue
+            value = matches[0]
+            key = (field, "=", str(value).upper())
+            if key in existing_exact:
+                continue
+            updated.append(
+                PlanFilter(
+                    field=field,
+                    operator="=",
+                    value=value,
+                    rationale=f"Match the requested {field.replace('_', ' ')} value from the uploaded LRP.",
+                )
+            )
+        return updated
+
+    def _add_fallback_car_family_filter(self, lowered: str, filters: list[PlanFilter]) -> list[PlanFilter]:
+        if any(item.field in {"car_family", "commercial_name", "car_family_code"} for item in filters):
+            return filters
+
+        focus_patterns = [
+            r"tell me about\s+(.+)$",
+            r"give me details for\s+(.+)$",
+            r"details for\s+(.+)$",
+            r"show launches for\s+(.+)$",
+            r"what launches are planned for\s+(.+)$",
+            r"which launches are planned for\s+(.+)$",
+            r"when is\s+(.+?)\s+launching\??$",
+            r"when does\s+(.+?)\s+launch\??$",
+        ]
+        subject: str | None = None
+        for pattern in focus_patterns:
+            match = re.search(pattern, lowered, flags=re.IGNORECASE)
+            if match:
+                subject = match.group(1).strip()
+                break
+        if not subject:
+            return filters
+
+        code_match = re.fullmatch(r"[A-Z][A-Z0-9_-]{2,}", subject.upper())
+        if not code_match:
+            return filters
+
+        candidate = code_match.group(0)
+        if candidate.isdigit() or candidate in CAR_FAMILY_FALLBACK_EXCLUSIONS:
+            return filters
+        return filters + [
+            PlanFilter(
+                field="car_family",
+                operator="=",
+                value=candidate,
+                rationale="Use a car-family-like code in the question as an exact vehicle identifier.",
+            )
+        ]
 
     def _detect_metric(self, lowered: str, analysis_year: int | None, data_view: str) -> str:
         if analysis_year and "volume" in lowered:
@@ -275,12 +628,64 @@ class Planner:
             sort_by.append("launch_date")
         return sort_by
 
+    def _detect_milestone_columns(self, lowered: str) -> list[str]:
+        explicit_matches = [
+            column
+            for column, patterns in MILESTONE_FIELD_ALIASES.items()
+            if any(re.search(pattern, lowered) for pattern in patterns)
+        ]
+        if explicit_matches:
+            return [column for column in MILESTONE_COLUMN_ORDER if column in explicit_matches]
+        if "milestone" in lowered or "milestones" in lowered:
+            return list(MILESTONE_COLUMN_ORDER)
+        return []
+
+    def _detect_milestone_anchor(self, lowered: str) -> str:
+        if "mca2" in lowered or "mca 2" in lowered:
+            return "mca2_sopm"
+        if re.search(r"\bmca\b", lowered):
+            return "mca_sopm"
+        return "sopm"
+
+    def _detect_milestone_deliverable_codes(self, lowered: str, milestone_columns: list[str]) -> list[str]:
+        if not milestone_columns:
+            return []
+        if not any(
+            token in lowered
+            for token in ["deliverable", "deliverables", "governance", "readiness", "objective", "risk", "risks", "ownership", "timeline", "timelines", "escalation"]
+        ):
+            return []
+        codes = [MILESTONE_COLUMN_TO_CODE[column] for column in milestone_columns if column in MILESTONE_COLUMN_TO_CODE]
+        return self._dedupe(codes)
+
+    def _add_milestone_anchor_filters(self, filters: list[PlanFilter], milestone_anchor: str | None) -> list[PlanFilter]:
+        if milestone_anchor == "mca_sopm" and not any(item.field == "has_mca" for item in filters):
+            return filters + [
+                PlanFilter(
+                    field="has_mca",
+                    operator="=",
+                    value=True,
+                    rationale="Milestone derivation at MCA requires rows with an MCA date.",
+                )
+            ]
+        if milestone_anchor == "mca2_sopm" and not any(item.field == "has_mca2" for item in filters):
+            return filters + [
+                PlanFilter(
+                    field="has_mca2",
+                    operator="=",
+                    value=True,
+                    rationale="Milestone derivation at MCA2 requires rows with an MCA2 date.",
+                )
+            ]
+        return filters
+
     def _detect_filters(
         self,
         lowered: str,
         time_window_months: int | None,
         analysis_year: int | None,
         data_view: str,
+        analysis_mode: str,
     ) -> list[PlanFilter]:
         filters: list[PlanFilter] = []
         launch_year_query = analysis_year is not None and any(
@@ -317,7 +722,7 @@ class Planner:
             )
 
         if data_view == "launch_event":
-            if analysis_year is not None and launch_year_query:
+            if analysis_year is not None and (launch_year_query or analysis_mode == "overlap"):
                 filters.append(
                     PlanFilter(
                         field="launch_year",
@@ -380,6 +785,15 @@ class Planner:
                     operator="=",
                     value=analysis_year,
                     rationale=f"Restrict design launches to SOPM year {analysis_year}.",
+                )
+            )
+        elif analysis_year is not None and ("active in" in lowered or "active vehicles" in lowered):
+            filters.append(
+                PlanFilter(
+                    field="active_year",
+                    operator="=",
+                    value=analysis_year,
+                    rationale=f"Vehicle must be active during {analysis_year}.",
                 )
             )
         elif analysis_year is not None and "volume" not in lowered and "sopm" not in lowered:
@@ -451,7 +865,7 @@ class Planner:
                     rationale="Query asks about missing OTA capability.",
                 )
             )
-        if "fota" in lowered:
+        if re.search(r"\bfota\b", lowered):
             operator = "not_contains" if any(token in lowered for token in ["lack", "missing", "without"]) else "contains"
             filters.append(
                 PlanFilter(
@@ -517,7 +931,7 @@ class Planner:
             )
 
         region_field = "initial_prod_zone" if "ipz" in lowered or "initial prod zone" in lowered else "region_of_sales"
-        for region in ["CHN", "EER", "EEU", "IAP", "MEA", "NAM", "SAM", "TBD"]:
+        for region in ["CHN", "EER", "EEU", "IAP", "MEA", "NAM", "SAM"]:
             if region.lower() in lowered:
                 filters.append(
                     PlanFilter(
@@ -527,9 +941,28 @@ class Planner:
                         rationale=f"Filter to {region} on the requested regional dimension.",
                     )
                 )
+        requested_brand = self._extract_brand(lowered)
+        if requested_brand:
+            filters.append(
+                PlanFilter(
+                    field="brand",
+                    operator="=",
+                    value=requested_brand,
+                    rationale=f"Filter to the {requested_brand} brand requested in the question.",
+                )
+            )
         return filters
 
-    def _requested_columns(self, intent: str, lowered: str, analysis_year: int | None, data_view: str) -> list[str]:
+    def _requested_columns(
+        self,
+        intent: str,
+        lowered: str,
+        analysis_year: int | None,
+        data_view: str,
+        milestone_columns: list[str],
+        milestone_anchor: str | None,
+        milestone_deliverable_codes: list[str],
+    ) -> list[str]:
         if intent == "count":
             return ["car_family"]
         if data_view == "launch_event":
@@ -568,6 +1001,19 @@ class Planner:
             "program",
             "sopm",
         ]
+        if any(
+            phrase in lowered
+            for phrase in [
+                "tell me about",
+                "details for",
+                "show launches for",
+                "what launches are planned for",
+                "which launches are planned for",
+                "when is",
+                "when does",
+            ]
+        ):
+            columns.extend(["mca_sopm", "mca2_sopm", "eop"])
         if analysis_year and "volume" in lowered:
             columns.append(f"volume_{analysis_year}")
         if "lifecycle" in lowered:
@@ -592,6 +1038,25 @@ class Planner:
             columns.append("declining_post_sopm")
         if "moving from sopm" in lowered or "within short intervals" in lowered:
             columns.extend(["months_sopm_to_mca", "months_mca_to_mca2", "min_transition_gap_months"])
+        if milestone_columns:
+            columns.extend(milestone_columns)
+            columns.append("milestone_anchor_date")
+            columns.append("milestone_anchor_label")
+            if milestone_anchor and milestone_anchor not in columns:
+                columns.append(milestone_anchor)
+        if milestone_deliverable_codes:
+            columns.extend(
+                [
+                    "deliverable_milestone_code",
+                    "deliverable_milestone_label",
+                    "deliverable_governance_communication",
+                    "deliverable_readiness_objectives",
+                    "deliverable_timelines",
+                    "deliverable_risks",
+                    "deliverable_escalation_path",
+                    "deliverable_ownership",
+                ]
+            )
         return self._dedupe(columns)
 
     def _detect_region_scope(self, lowered: str) -> str:
@@ -631,6 +1096,8 @@ class Planner:
         time_window_months: int | None,
         analysis_year: int | None,
         data_view: str,
+        milestone_anchor: str | None,
+        milestone_columns: list[str],
     ) -> str:
         clauses = [f"Plan a {intent} query over launch programs."]
         if data_view == "launch_event":
@@ -641,6 +1108,8 @@ class Planner:
             clauses.append(f"Focus on the next {time_window_months} months from {date.today().isoformat()}.")
         if analysis_year:
             clauses.append(f"Use {analysis_year} as the analysis year.")
+        if milestone_columns:
+            clauses.append(f"Derive milestone dates backward from {ANCHOR_LABELS[milestone_anchor or 'sopm']} and round to the nearest Monday.")
         if "risk" in lowered:
             clauses.append("Surface deterministic signals only when the dataset contains explicit supporting fields.")
         return " ".join(clauses)

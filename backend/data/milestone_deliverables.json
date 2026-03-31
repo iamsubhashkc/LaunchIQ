@@ -1,0 +1,112 @@
+[
+  {
+    "milestone_code": "POST_IM",
+    "milestone_label": "Post IM",
+    "sequence_order": 1,
+    "governance_communication": "Vehicle identified. Vehicle PI created. Launch communicated to domain PMs.",
+    "readiness_objectives": "Vehicle PI created.\nVehicle features identified",
+    "timelines": "Within 7 Working Days.",
+    "risks": "Vehicle PI not Created",
+    "escalation_path": "Domain PM -> Domain GPM.",
+    "ownership": "Vehicle Launch PM"
+  },
+  {
+    "milestone_code": "PM",
+    "milestone_label": "PM",
+    "sequence_order": 2,
+    "governance_communication": "Domain PMs confirm vehicle feature scope and link Feature & Cross domain PIs.",
+    "readiness_objectives": "All Feature PIs linked.\nHigh Complexity features Identified & Dependencies captured.\nDomain impact identified.\nDependencies surfaced.",
+    "timelines": "4 weeks prior to PM",
+    "risks": "Missing domain response or dependency identification.",
+    "escalation_path": "Domain PM -> Domain GPM.",
+    "ownership": "Domain PMs."
+  },
+  {
+    "milestone_code": "CM",
+    "milestone_label": "CM",
+    "sequence_order": 3,
+    "governance_communication": "Engineering commitment communication (PM -> TPM -> Engineering).",
+    "readiness_objectives": "HLD completed\nProduct backlog & Scope locked down\nBudget estimated (+Standard budget)",
+    "timelines": "Backlogs: 2 Months prior to CM.\nHLD Completed: 2 Weeks prior to CM\nThe Budget estimates will be submitted at CM",
+    "risks": "No Risk register.\nActivities without budget.\nBacklog readiness missing.",
+    "escalation_path": "Vehicle Launch PM -> Domain GPM -> VP Product.",
+    "ownership": "Engineering (commitment & budget)."
+  },
+  {
+    "milestone_code": "SHRM",
+    "milestone_label": "SHRM",
+    "sequence_order": 4,
+    "governance_communication": "Cross-domain integration coordination across platforms.",
+    "readiness_objectives": "LLD completed, integration environment ready.\nAPI contracts validated.\nReassess the budget to support the vehicle launch on the platform based on the LLD.",
+    "timelines": "All External Party Integrations to be ready (LLD) - AT SHRM.",
+    "risks": "Risks Not Identified.\nIntegration environment or API readiness missing.",
+    "escalation_path": "Vehicle Launch PM -> Domain GPM.",
+    "ownership": "Engineering -"
+  },
+  {
+    "milestone_code": "X0",
+    "milestone_label": "X0",
+    "sequence_order": 5,
+    "governance_communication": "Functional integration readiness monitored.",
+    "readiness_objectives": "Critical Services & features deployed to pre-prod and, negotiated with CVDP Lead\nE2E integration validated.\nFunctional vehicle build available.",
+    "timelines": "Start checks T-3 weeks.\nIntegration baseline review T-1 week.\nX0 milestone aligned with vehicle build availability.",
+    "risks": "E2E integration or deployment readiness incomplete.",
+    "escalation_path": "Vehicle Launch PM -> Domain GPM -> VP Product.",
+    "ownership": "Engineering / TPM."
+  },
+  {
+    "milestone_code": "SOP_8",
+    "milestone_label": "SOP -8",
+    "sequence_order": 6,
+    "governance_communication": "Validation by Roberto Vietti's Team before Preprod Readiness (SOP -6)",
+    "readiness_objectives": "WIP",
+    "timelines": "At SOP-8 (8 Months prior to SOPM)",
+    "risks": "WIP",
+    "escalation_path": "Vehicle Launch PM -> Domain GPM.",
+    "ownership": "Roberto Vietti & Team"
+  },
+  {
+    "milestone_code": "SOP_6",
+    "milestone_label": "SOP -6",
+    "sequence_order": 7,
+    "governance_communication": "Validation progress monitored with Delivery Managers.",
+    "readiness_objectives": "Critical features working E2E (Command + Telemetry + App flows).\nOTA flow validated in test environment (campaign execution tested).\nNo open Sev1 / limited Sev2 defects on critical features",
+    "timelines": "At SOP-6 (6 Months prior to SOPM)",
+    "risks": "Features working individually but failing in E2E flows.\nOTA / CIAM / Subscription flows not validated together.\nDefects closing late, causing compression at SOP-3.",
+    "escalation_path": "Vehicle Launch PM -> Domain GPM",
+    "ownership": "Delivery Managers + Engineering."
+  },
+  {
+    "milestone_code": "SOP_3",
+    "milestone_label": "SOP -3",
+    "sequence_order": 8,
+    "governance_communication": "Production readiness coordination.",
+    "readiness_objectives": "All services deployed in prod / pre-prod (region-ready).\nOTA campaign executed successfully on pilot VINs.\nEnd-to-end flows stable (App - Backend - Vehicle) with no Sev1 / minimal Sev2.",
+    "timelines": "At SOP-3 (3 Months prior to SOPM)",
+    "risks": "Deployment done but not validated in real conditions.\nOTA works in test but fails in production.\nRegional / MNO gaps discovered too late.",
+    "escalation_path": "Domain GPM -> VP Product.",
+    "ownership": "Delivery Managers + Engineering."
+  },
+  {
+    "milestone_code": "LRM",
+    "milestone_label": "LRM",
+    "sequence_order": 9,
+    "governance_communication": "Launch readiness coordination.",
+    "readiness_objectives": "End-to-end customer flows working (onboarding, command, data, subscription).\nMonitoring, alerting, and dashboards active.\nSupport readiness confirmed (call center, diagnostics, incident playbooks)\nOpen Road Tests Completed by LRM",
+    "timelines": "At LRM (12 Weeks prior to SOPM)",
+    "risks": "Customer onboarding or app flows breaking at launch.\nMonitoring / alerting gaps leading to blind spots.\nSupport teams not ready for real incidents.",
+    "escalation_path": "Domain GPM -> VP Product.",
+    "ownership": "Delivery Managers."
+  },
+  {
+    "milestone_code": "SOPM",
+    "milestone_label": "SOPM",
+    "sequence_order": 10,
+    "governance_communication": "Post-launch monitoring and operational updates.",
+    "readiness_objectives": "All services live and operational in production.\nNo open Sev1 / controlled Sev2 with mitigation.\nMonitoring, alerting, and support fully active and responding",
+    "timelines": "2 Weeks prior to SOPM",
+    "risks": "Production instability under real customer load.\nHigh-severity issues impacting core features at launch.\nSlow incident response due to untested ops readiness.\nProduction service or connectivity issues post launch.",
+    "escalation_path": "Domain GPM -> VP Product.",
+    "ownership": "Delivery Managers / Operations."
+  }
+]

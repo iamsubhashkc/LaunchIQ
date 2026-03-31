@@ -8,8 +8,8 @@ export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loadi
     <section className="panel input-panel">
       <div className="panel-header">
         <div>
-          <h2>Query Workspace</h2>
-          <p>Submit a business question and review the plan before using the answer.</p>
+          <h2>Ask LaunchIQ</h2>
+          <p>Enter a portfolio, launch, milestone, readiness, or vehicle-specific question.</p>
         </div>
       </div>
 
@@ -18,12 +18,14 @@ export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loadi
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           rows={4}
-          placeholder="Which vehicles are launching in the next 24 months, and how are they distributed across regions?"
+          placeholder="Example: What are the X0 deliverables for F2X, and when is the X0 for F2X?"
         />
         <div className="query-actions">
-          <button type="submit" disabled={loading || !query.trim()}>
-            {loading ? "Running..." : "Run LaunchIQ"}
-          </button>
+          <div className="query-primary-actions">
+            <button type="submit" disabled={loading || !query.trim()}>
+              {loading ? "Running analysis..." : "Run Query"}
+            </button>
+          </div>
           <div className="sample-queries">
             {sampleQueries.map((sample) => (
               <button key={sample} type="button" className="ghost-button" onClick={() => onQueryChange(sample)}>
@@ -36,4 +38,3 @@ export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loadi
     </section>
   );
 }
-

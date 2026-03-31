@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .clarification import merge_clarification_answers
 from .execution import ExecutionEngine
 from .learning import LearningStore
-from .models import ClarifyRequest, FeedbackRequest, FeedbackResponse, QueryRequest, QueryResponse
+from .milestone_store import MilestoneStore
+from .models import (
+    ClarifyRequest,
+    FeedbackRequest,
+    FeedbackResponse,
+    MilestoneDeliverable,
+    MilestoneDeliverableListResponse,
+    MilestoneDeliverableUpdateRequest,
+    QueryRequest,
+    QueryResponse,
+)
 from .planner import Planner
 
 
@@ -22,6 +33,7 @@ app.add_middleware(
 planner = Planner()
 executor = ExecutionEngine()
 learning_store = LearningStore()
+milestone_store = MilestoneStore()
 
 
 @app.get("/health")
@@ -95,3 +107,26 @@ def feedback(request: FeedbackRequest) -> FeedbackResponse:
         correction=request.correction,
     )
     return FeedbackResponse(stored=True, record_id=stored["record_id"], stored_at=stored["stored_at"])
+
+
+@app.get("/milestones/deliverables", response_model=MilestoneDeliverableListResponse)
+def list_milestone_deliverables() -> MilestoneDeliverableListResponse:
+    items = [MilestoneDeliverable(**item) for item in milestone_store.list_deliverables()]
+    return MilestoneDeliverableListResponse(items=items)
+
+
+@app.get("/milestones/deliverables/{milestone_code}", response_model=MilestoneDeliverable)
+def get_milestone_deliverable(milestone_code: str) -> MilestoneDeliverable:
+    item = milestone_store.get_deliverable(milestone_code)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown milestone deliverable: {milestone_code}")
+    return MilestoneDeliverable(**item)
+
+
+@app.put("/milestones/deliverables/{milestone_code}", response_model=MilestoneDeliverable)
+def update_milestone_deliverable(
+    milestone_code: str,
+    request: MilestoneDeliverableUpdateRequest,
+) -> MilestoneDeliverable:
+    item = milestone_store.upsert_deliverable(milestone_code, request.model_dump(exclude_none=True))
+    return MilestoneDeliverable(**item)

@@ -7,9 +7,9 @@ import { ExplanationPanel } from "./components/ExplanationPanel";
 import { FeedbackButtons } from "./components/FeedbackButtons";
 
 const SAMPLE_QUERIES = [
-  "Which Car Families are launching in the next 24 months, and how are they distributed across regions (RoS vs IPZ)?",
-  "Which vehicles are still on legacy SDP and scheduled to transition to SSDP before EOP?",
-  "How many vehicles lack FOTA/FOTA IVI capability, and what is the customer impact at launch?",
+  "Which vehicles are launching in the next 24 months across RoS and IPZ?",
+  "Tell me about Jeep Recon",
+  "What are the X0 deliverables for F2X, and when is the X0 for F2X?",
 ];
 
 export default function App() {
@@ -19,6 +19,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [feedbackState, setFeedbackState] = useState("");
+  const [activeView, setActiveView] = useState("workspace");
 
   const hasAnswer = response?.status === "ok";
 
@@ -31,6 +32,7 @@ export default function App() {
     setError("");
     setFeedbackState("");
     setPendingClarification(null);
+    setActiveView("workspace");
     try {
       const payload = await queryLaunchIQ(nextQuery);
       setQuery(nextQuery);
@@ -77,25 +79,37 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="hero">
-        <div>
-          <p className="eyebrow">LaunchIQ</p>
-          <h1>Deterministic launch reasoning for platform, region, and readiness decisions.</h1>
-          <p className="hero-copy">
-            LaunchIQ uses the model only for planning. Every answer is executed against structured launch data with
-            explainable filters, grouping, and logic.
-          </p>
-        </div>
-        <div className="hero-metrics">
-          <div className="metric-card">
-            <span>Execution mode</span>
-            <strong>DuckDB + Pandas</strong>
-          </div>
-          <div className="metric-card">
-            <span>Planner mode</span>
-            <strong>{response?.plan ? "Structured JSON" : "Awaiting query"}</strong>
+      <header className="masthead">
+        <div className="brand-lockup">
+          <div className="brand-badge">
+            <span className="brand-mark">LaunchIQ</span>
           </div>
         </div>
+      </header>
+
+      <div className="topbar">
+        <div className="view-switch">
+          <button
+            type="button"
+            className={activeView === "workspace" ? "view-switch-button active" : "view-switch-button"}
+            onClick={() => setActiveView("workspace")}
+          >
+            Workspace
+          </button>
+          <button
+            type="button"
+            className={activeView === "analysis" ? "view-switch-button active" : "view-switch-button"}
+            onClick={() => setActiveView("analysis")}
+          >
+            Analysis
+          </button>
+        </div>
+        {response?.query ? (
+          <div className="active-query-pill">
+            <span>Current question</span>
+            <strong>{response.query}</strong>
+          </div>
+        ) : null}
       </div>
 
       <ChatInput
@@ -112,10 +126,15 @@ export default function App() {
         <ClarificationBox questions={pendingClarification.clarification} onSubmit={handleClarify} loading={loading} />
       ) : null}
 
-      <div className="workspace-grid">
-        <AnswerCard response={response} loading={loading} />
-        <ExplanationPanel plan={response?.plan} explanation={response?.explanation} summary={summary} />
-      </div>
+      {activeView === "workspace" ? (
+        <div className="workspace-stage">
+          <AnswerCard response={response} loading={loading} />
+        </div>
+      ) : (
+        <div className="analysis-stage">
+          <ExplanationPanel plan={response?.plan} explanation={response?.explanation} summary={summary} />
+        </div>
+      )}
 
       <FeedbackButtons disabled={!hasAnswer || loading} onSubmit={handleFeedback} status={feedbackState} />
     </div>

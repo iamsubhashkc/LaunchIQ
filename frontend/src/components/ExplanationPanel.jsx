@@ -3,19 +3,19 @@ export function ExplanationPanel({ plan, explanation, summary }) {
     <section className="panel explanation-panel">
       <div className="panel-header">
         <div>
-          <h2>Explanation</h2>
-          <p>Planner intent, filters, and execution logic.</p>
+          <h2>Analysis Trace</h2>
+          <p>Technical trace for audit, verification, and planner review.</p>
         </div>
       </div>
 
       <div className="explanation-stack">
         <div className="explanation-card">
-          <span className="label">Planning summary</span>
+          <span className="label">Summary</span>
           <p>{summary}</p>
         </div>
 
         <div className="explanation-card">
-          <span className="label">Plan</span>
+          <span className="label">Planner Output</span>
           {plan ? (
             <ul className="detail-list">
               <li>Intent: {plan.intent}</li>
@@ -29,7 +29,7 @@ export function ExplanationPanel({ plan, explanation, summary }) {
         </div>
 
         <div className="explanation-card">
-          <span className="label">Applied filters</span>
+          <span className="label">Applied Filters</span>
           {explanation?.applied_filters?.length ? (
             <ul className="detail-list">
               {explanation.applied_filters.map((filter, index) => (
@@ -51,4 +51,3 @@ export function ExplanationPanel({ plan, explanation, summary }) {
     </section>
   );
 }
-

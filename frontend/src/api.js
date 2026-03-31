@@ -34,3 +34,10 @@ export function sendFeedback(query, plan, answer, rating, correction) {
   });
 }
 
+export async function getMilestoneDeliverables() {
+  const response = await fetch(`${API_BASE_URL}/milestones/deliverables`);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
