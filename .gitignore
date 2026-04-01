@@ -9,3 +9,4 @@ dist/
 ~$*
 backend/data/*.duckdb
 backend/data/*.jsonl
+sample_lrp.xlsx
