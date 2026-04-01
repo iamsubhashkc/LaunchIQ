@@ -200,6 +200,36 @@ function buildVehicleDetails(rows) {
   ].filter((item) => item.value);
 }
 
+function buildLaunchBriefRows(rows) {
+  const groups = new Map();
+
+  rows.forEach((row) => {
+    const launch = resolveRelevantLaunch([row]);
+    const key = [
+      row.car_family || "",
+      row.brand || "",
+      row.commercial_name || "",
+      row.eea || "",
+      row.tcu_details || "",
+      row.region_of_sales || "",
+      row.initial_prod_zone || "",
+      launch?.label || "",
+      launch?.value || "",
+    ].join("|");
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        head: row,
+        launch,
+        rows: [],
+      });
+    }
+    groups.get(key).rows.push(row);
+  });
+
+  return [...groups.values()];
+}
+
 function determineCurrentMilestone(row) {
   const now = new Date();
   const milestones = BRIEF_MILESTONE_SEQUENCE.map((item) => ({
@@ -678,6 +708,82 @@ function renderLaunchTimeline(answer, response) {
   );
 }
 
+function renderLaunchBrief(answer, response) {
+  if (!Array.isArray(answer) || answer.length === 0) {
+    return <p className="empty-state">No launch rows matched the requested vehicle or region.</p>;
+  }
+
+  const groups = groupRowsByEntity(answer);
+  return (
+    <div className="insight-stack vehicle-brief-stack">
+      <div className="hero-insight">
+        <span className="insight-kicker">Launch Brief</span>
+        <strong>{groups.length === 1 ? groups[0][0].commercial_name || groups[0][0].car_family : `${groups.length} matched vehicles`}</strong>
+        <p>{response.query}</p>
+      </div>
+      {groups.map((rows) => {
+        const head = rows[0];
+        const launchRows = buildLaunchBriefRows(rows);
+        const launch = resolveRelevantLaunch(rows);
+        return (
+          <section className="vehicle-brief launch-brief" key={`${head.car_family}-${head.commercial_name}`}>
+            <div className="vehicle-hero">
+              <div>
+                <div className="vehicle-identity">
+                  <h3>{head.car_family}</h3>
+                  <p>{[head.brand, head.commercial_name].filter(Boolean).join(" - ")}</p>
+                </div>
+                <p className="launch-brief-summary">
+                  {[head.car_family, head.brand, head.commercial_name].filter(Boolean).join(": ")}
+                  {head.eea ? ` with ${head.eea}` : ""}
+                  {head.tcu_details ? ` and ${head.tcu_details}` : ""}
+                  {launch ? ` has ${launch.label} on ${formatValue(launch.value)}.` : ""}
+                </p>
+              </div>
+              {renderVehicleImage(head)}
+            </div>
+
+            <section className="brief-section">
+              <div className="brief-section-header">
+                <span className="section-kicker">Launch Schedule</span>
+              </div>
+              <div className="launch-brief-list">
+                {launchRows.map((item, index) => (
+                  <article className="launch-brief-row" key={`${item.head.car_family}-${item.launch?.value || index}`}>
+                    <div className="launch-brief-row-main">
+                      <strong>
+                        {[item.head.car_family, item.head.brand, item.head.commercial_name].filter(Boolean).join(": ")}
+                      </strong>
+                      <p>
+                        {item.head.eea ? `${item.head.eea} - ` : ""}
+                        {item.head.tcu_details || "TCU not provided"}
+                      </p>
+                    </div>
+                    <div className="launch-brief-row-meta">
+                      <span>{item.launch?.label || "Launch"}</span>
+                      <strong>{formatValue(item.launch?.value)}</strong>
+                    </div>
+                    <div className="launch-brief-row-regions">
+                      <div>
+                        <span>Initial Production Zone</span>
+                        <strong>{formatList(extractUniqueValues(item.rows, "initial_prod_zone")) || "Not provided"}</strong>
+                      </div>
+                      <div>
+                        <span>Region of Sales</span>
+                        <strong>{formatList(extractUniqueValues(item.rows, "region_of_sales")) || "Not provided"}</strong>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function renderEntitySpotlight(answer, response) {
   if (!Array.isArray(answer) || answer.length === 0) {
     return <p className="empty-state">No rows matched the requested vehicle profile.</p>;
@@ -1073,6 +1179,9 @@ function inferViewMode(response) {
   if (!Array.isArray(answer)) {
     return { id: "structured_table", label: "Structured Table", description: "Default deterministic row view." };
   }
+  if (queryStartsWith(query, ["when "]) && query.includes("launch")) {
+    return { id: "launch_brief", label: "Launch Brief", description: "Summarizes launch timing by vehicle, stage, and region." };
+  }
   if (isVehicleIntent && answer.length > 0 && answer.length <= 24) {
     return { id: "vehicle_profile", label: "Vehicle Brief", description: "Summarizes the selected vehicle with lifecycle and readiness context." };
   }
@@ -1116,6 +1225,8 @@ function renderViewMode(mode, response) {
       return renderBinaryResponse(answer, response);
     case "launch_timeline":
       return renderLaunchTimeline(answer, response);
+    case "launch_brief":
+      return renderLaunchBrief(answer, response);
     case "vehicle_profile":
       return renderEntitySpotlight(answer, response);
     case "component_match":
