@@ -73,3 +73,11 @@ export async function getMilestoneDeliverables() {
   }
   return response.json();
 }
+
+export async function getFeedbackReport() {
+  const response = await fetch(`${API_BASE_URL}/feedback/report`);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.json();
+}

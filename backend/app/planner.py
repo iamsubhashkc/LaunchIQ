@@ -11,7 +11,7 @@ from typing import Any
 from .clarification import detect_clarifications
 from .data_loader import CONNECTIVITY_COLUMNS, INFOTAINMENT_COLUMNS, LaunchDataLoader
 from .milestones import ANCHOR_LABELS, MILESTONE_COLUMN_ORDER, MILESTONE_COLUMN_TO_CODE
-from .models import LlmSuggestion, PlanFilter, PlanSnapshot, PlannerDiagnostics, QueryPlan
+from .models import FeedbackHint, LlmSuggestion, PlanFilter, PlanSnapshot, PlannerDiagnostics, QueryPlan
 
 
 PLANNER_PROMPT = """
@@ -173,7 +173,8 @@ MONTH_NAME_TO_NUMBER = {
 
 
 class Planner:
-    def __init__(self) -> None:
+    def __init__(self, learning_store: Any | None = None) -> None:
+        self.learning_store = learning_store
         self.provider = os.getenv("LAUNCHIQ_LLM_PROVIDER", "heuristic").lower()
         self.mode = os.getenv(
             "LAUNCHIQ_PLANNER_MODE",
@@ -182,17 +183,20 @@ class Planner:
 
     def build_plan(self, query: str, mode_override: str | None = None) -> QueryPlan:
         heuristic_plan = self._heuristic_plan(query)
+        feedback_context = self._relevant_feedback_context(query)
         llm_suggestion: dict[str, Any] | None = None
         accepted_overrides: list[str] = []
         decision_notes: list[str] = []
         active_mode = mode_override if mode_override in {"heuristic", "hybrid", "llm"} else self.mode
         if mode_override in {"heuristic", "hybrid", "llm"}:
             decision_notes.append(f"Planner mode requested by UI: {mode_override}.")
+        if feedback_context:
+            decision_notes.append(f"Loaded {len(feedback_context)} relevant feedback hint(s) for planner guidance.")
         if active_mode == "hybrid":
-            plan, llm_suggestion, accepted_overrides, hybrid_notes = self._hybrid_plan(query, heuristic_plan)
+            plan, llm_suggestion, accepted_overrides, hybrid_notes = self._hybrid_plan(query, heuristic_plan, feedback_context)
             decision_notes.extend(hybrid_notes)
         elif active_mode == "llm":
-            llm_plan = self._plan_with_provider(query)
+            llm_plan = self._plan_with_provider(query, feedback_context)
             if llm_plan is not None:
                 plan = llm_plan
                 decision_notes.append("Used full LLM planner output.")
@@ -210,18 +214,19 @@ class Planner:
             final_plan=plan,
             llm_suggestion=llm_suggestion,
             accepted_overrides=accepted_overrides,
+            feedback_context=feedback_context,
             decision_notes=decision_notes,
         )
         return plan
 
-    def _plan_with_provider(self, query: str) -> QueryPlan | None:
+    def _plan_with_provider(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> QueryPlan | None:
         if self.provider == "ollama":
-            return self._call_ollama(query)
+            return self._call_ollama(query, feedback_context or [])
         if self.provider == "openai":
-            return self._call_openai_compatible(query)
+            return self._call_openai_compatible(query, feedback_context or [])
         return None
 
-    def _call_ollama(self, query: str) -> QueryPlan | None:
+    def _call_ollama(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> QueryPlan | None:
         base_url = os.getenv("LAUNCHIQ_OLLAMA_URL", "http://localhost:11434/api/chat")
         model = os.getenv("LAUNCHIQ_OLLAMA_MODEL", "llama3.1:8b")
         payload = {
@@ -229,7 +234,7 @@ class Planner:
             "stream": False,
             "messages": [
                 {"role": "system", "content": PLANNER_PROMPT},
-                {"role": "user", "content": query},
+                {"role": "user", "content": self._planner_user_prompt(query, feedback_context or [])},
             ],
             "format": "json",
         }
@@ -239,7 +244,7 @@ class Planner:
         except Exception:
             return None
 
-    def _call_openai_compatible(self, query: str) -> QueryPlan | None:
+    def _call_openai_compatible(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> QueryPlan | None:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             return None
@@ -250,7 +255,7 @@ class Planner:
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": PLANNER_PROMPT},
-                {"role": "user", "content": query},
+                {"role": "user", "content": self._planner_user_prompt(query, feedback_context or [])},
             ],
         }
         try:
@@ -276,8 +281,9 @@ class Planner:
         self,
         query: str,
         heuristic_plan: QueryPlan,
+        feedback_context: list[dict[str, Any]] | None = None,
     ) -> tuple[QueryPlan, dict[str, Any] | None, list[str], list[str]]:
-        interpretation = self._interpret_with_provider(query)
+        interpretation = self._interpret_with_provider(query, feedback_context or [])
         if interpretation is None:
             return heuristic_plan, None, [], ["Hybrid mode was requested, but no LLM provider was available, so LaunchIQ stayed on heuristics."]
 
@@ -291,14 +297,14 @@ class Planner:
             plan.reasoning_summary = f"{plan.reasoning_summary} Hybrid assist: {reason}"
         return plan, interpretation, accepted_overrides, decision_notes
 
-    def _interpret_with_provider(self, query: str) -> dict[str, Any] | None:
+    def _interpret_with_provider(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         if self.provider == "ollama":
-            return self._call_ollama_interpretation(query)
+            return self._call_ollama_interpretation(query, feedback_context or [])
         if self.provider == "openai":
-            return self._call_openai_interpretation(query)
+            return self._call_openai_interpretation(query, feedback_context or [])
         return None
 
-    def _call_ollama_interpretation(self, query: str) -> dict[str, Any] | None:
+    def _call_ollama_interpretation(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         base_url = os.getenv("LAUNCHIQ_OLLAMA_URL", "http://localhost:11434/api/chat")
         model = os.getenv("LAUNCHIQ_OLLAMA_MODEL", "llama3.1:8b")
         payload = {
@@ -306,7 +312,7 @@ class Planner:
             "stream": False,
             "messages": [
                 {"role": "system", "content": HYBRID_INTERPRET_PROMPT},
-                {"role": "user", "content": query},
+                {"role": "user", "content": self._planner_user_prompt(query, feedback_context or [])},
             ],
             "format": "json",
         }
@@ -316,7 +322,7 @@ class Planner:
         except Exception:
             return None
 
-    def _call_openai_interpretation(self, query: str) -> dict[str, Any] | None:
+    def _call_openai_interpretation(self, query: str, feedback_context: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             return None
@@ -327,7 +333,7 @@ class Planner:
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": HYBRID_INTERPRET_PROMPT},
-                {"role": "user", "content": query},
+                {"role": "user", "content": self._planner_user_prompt(query, feedback_context or [])},
             ],
         }
         try:
@@ -335,6 +341,40 @@ class Planner:
             return json.loads(response["choices"][0]["message"]["content"])
         except Exception:
             return None
+
+    def _relevant_feedback_context(self, query: str) -> list[dict[str, Any]]:
+        if self.learning_store is None:
+            return []
+        try:
+            return list(self.learning_store.relevant_feedback(query))
+        except Exception:
+            return []
+
+    def _planner_user_prompt(self, query: str, feedback_context: list[dict[str, Any]]) -> str:
+        if not feedback_context:
+            return query
+        return (
+            f"Current user query:\n{query}\n\n"
+            "Relevant prior feedback (soft guidance only; use only if it clearly applies to this query):\n"
+            f"{self._format_feedback_context(feedback_context)}\n\n"
+            "Do not invent fields, filters, or business logic. Deterministic validation will run after your response."
+        )
+
+    def _format_feedback_context(self, feedback_context: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for item in feedback_context:
+            stored_at = item.get("stored_at")
+            timestamp = ""
+            if stored_at:
+                timestamp = f", stored_at={stored_at}"
+            correction = str(item.get("correction") or "").strip()
+            correction_text = f", correction={correction}" if correction else ""
+            lines.append(
+                f"- prior_query={item.get('query', '')}, rating={item.get('rating', 'helpful')}, "
+                f"match_type={item.get('match_type', 'similar')}, score={float(item.get('score', 0.0)):.2f}"
+                f"{correction_text}{timestamp}"
+            )
+        return "\n".join(lines)
 
     def _resolve_hybrid_overrides(
         self,
@@ -398,9 +438,11 @@ class Planner:
                 "clustering",
             ]
         )
+        if self._is_primary_volume_query(lowered):
+            intent_strong = True
         data_view_strong = bool(self._detect_milestone_columns(lowered)) or re.search(r"^\s*when\s+(?:is|does)\b", lowered) is not None
         if not data_view_strong:
-            data_view_strong = self._is_broad_launch_window_query(lowered) or any(
+            data_view_strong = self._is_primary_volume_query(lowered) or self._is_broad_launch_window_query(lowered) or any(
                 token in lowered
                 for token in [
                     "mca ",
@@ -428,7 +470,7 @@ class Planner:
         analysis_mode = self._detect_analysis_mode(masked_lowered)
         should_enrich_vehicle_brief = self._should_enrich_vehicle_brief(masked_lowered)
         group_by = self._detect_group_by(masked_lowered, intent, data_view)
-        metric = self._detect_metric(masked_lowered, analysis_year, data_view)
+        metric = self._detect_metric(masked_lowered, analysis_year, data_view, temporal_window)
         sort_by = self._detect_sort_by(masked_lowered, analysis_year)
         launch_window_view = data_view == "launch_event" and (
             self._is_broad_launch_window_query(masked_lowered)
@@ -454,6 +496,7 @@ class Planner:
             data_view,
             analysis_mode,
             temporal_window,
+            metric,
             milestone_columns,
             force_launch_event_window=bool(launch_window_view and not self._is_broad_launch_window_query(masked_lowered)),
         )
@@ -646,6 +689,7 @@ class Planner:
         final_plan: QueryPlan,
         llm_suggestion: dict[str, Any] | None,
         accepted_overrides: list[str],
+        feedback_context: list[dict[str, Any]],
         decision_notes: list[str],
     ) -> PlannerDiagnostics:
         llm_diag = None
@@ -657,6 +701,17 @@ class Planner:
                 reasoning=str(llm_suggestion.get("reasoning", "") or ""),
                 accepted_overrides=accepted_overrides,
             )
+        feedback_diag = [
+            FeedbackHint(
+                query=str(item.get("query", "")),
+                rating=str(item.get("rating", "helpful")),
+                correction=item.get("correction"),
+                match_type=str(item.get("match_type", "similar")),
+                score=float(item.get("score", 0.0) or 0.0),
+                stored_at=item.get("stored_at"),
+            )
+            for item in feedback_context
+        ]
 
         return PlannerDiagnostics(
             query_frame=self._classify_query_frame(query.lower(), final_plan),
@@ -665,6 +720,7 @@ class Planner:
             heuristic_baseline=self._snapshot_plan(heuristic_plan),
             llm_suggestion=llm_diag,
             final_resolved_plan=self._snapshot_plan(final_plan),
+            feedback_context=feedback_diag,
             decision_notes=decision_notes,
         )
 
@@ -685,6 +741,52 @@ class Planner:
     def _matches_vehicle_subject(self, lowered: str) -> bool:
         return re.search(r"\b(which|what|show|list)\b.*\b(vehicles|vehicle|car families|car family|launches)\b", lowered) is not None
 
+    def _is_compare_query(self, lowered: str) -> bool:
+        return "compare" in lowered or " vs " in lowered
+
+    def _is_primary_volume_query(self, lowered: str) -> bool:
+        if "volume" not in lowered:
+            return False
+        if any(
+            token in lowered
+            for token in [
+                "declining volume trends",
+                "volume impact",
+                "weighted by volume",
+                "high-volume",
+            ]
+        ):
+            return False
+        return any(
+            token in lowered
+            for token in [
+                "volume of",
+                "launch volume",
+                "total volume",
+                "highest volume",
+                "highest launch volume",
+                "top volume",
+                "top launch volume",
+            ]
+        )
+
+    def _is_ranked_volume_query(self, lowered: str) -> bool:
+        return self._is_primary_volume_query(lowered) and any(
+            token in lowered
+            for token in [
+                "highest volume",
+                "highest launch volume",
+                "top volume",
+                "top launch volume",
+            ]
+        )
+
+    def _is_year_temporal_window(self, temporal_window: tuple[str, str, str] | None) -> bool:
+        return temporal_window is not None and temporal_window[2].startswith("CY ")
+
+    def _is_fine_grained_temporal_window(self, temporal_window: tuple[str, str, str] | None) -> bool:
+        return temporal_window is not None and not self._is_year_temporal_window(temporal_window)
+
     def _detect_data_view(
         self,
         lowered: str,
@@ -694,6 +796,21 @@ class Planner:
         if self._detect_milestone_columns(lowered):
             return "vehicle"
         if re.search(r"^\s*when\s+(?:is|does)\b", lowered):
+            return "vehicle"
+        if self._is_primary_volume_query(lowered) and not any(
+            token in lowered
+            for token in [
+                "sopm in",
+                "have sopm",
+                "has sopm",
+                "mca in",
+                "have mca",
+                "has mca",
+                "mca2 in",
+                "have mca2",
+                "has mca2",
+            ]
+        ):
             return "vehicle"
         if any(token in lowered for token in ["mca ", "mca2", "mca sopm", "transition launch", "design launch"]):
             return "launch_event"
@@ -706,6 +823,10 @@ class Planner:
     def _detect_intent(self, lowered: str) -> str:
         if "ratio" in lowered or "volume impact" in lowered:
             return "distribution"
+        if self._is_primary_volume_query(lowered):
+            if self._is_compare_query(lowered) or self._is_ranked_volume_query(lowered) or "split by" in lowered or re.search(r"\bby\s+(ros|ipz|region|brand|platform|eea|tcu|infotainment)\b", lowered):
+                return "distribution"
+            return "count"
         if "month-wise" in lowered and "mca" in lowered and "mca2" in lowered:
             return "distribution"
         if self._matches_vehicle_subject(lowered):
@@ -730,6 +851,22 @@ class Planner:
 
     def _detect_group_by(self, lowered: str, intent: str, data_view: str) -> list[str]:
         groups: list[str] = []
+        if data_view == "vehicle" and intent == "distribution" and self._is_primary_volume_query(lowered):
+            if self._is_compare_query(lowered):
+                return ["comparison_value"]
+            if "ros vs ipz" in lowered or "(ros vs ipz)" in lowered:
+                return ["region_logic", "region_value"]
+            if "by ipz" in lowered or "by initial prod zone" in lowered:
+                return ["initial_prod_zone"]
+            if "by ros" in lowered or "by region" in lowered or "split by region" in lowered:
+                return ["region_of_sales"]
+            if "by brand" in lowered:
+                return ["brand"]
+            if "by platform" in lowered:
+                return ["platform"]
+            if "by eea" in lowered:
+                return ["eea"]
+            return ["car_family", "brand", "commercial_name"]
         if data_view == "launch_event":
             if "ros vs ipz" in lowered or "(ros vs ipz)" in lowered:
                 groups.extend(["region_logic", "region_value"])
@@ -1041,27 +1178,42 @@ class Planner:
         updated = list(filters)
 
         def add_for_field(field: str, hints: set[str]) -> None:
-            if not any(hint in lowered for hint in hints):
+            if any(item.field == field for item in updated):
                 return
-            existing = {
-                str(item.value).upper()
-                for item in updated
-                if item.field == field and item.operator == "contains"
-            }
+            matches: list[str] = []
             for label in self._stack_component_catalog()[field]:
                 aliases = self._stack_aliases(label)
                 if not any(self._alias_mentioned(lowered, alias) for alias in aliases):
                     continue
-                if label.upper() in existing:
-                    continue
+                matches.append(label)
+            if not matches:
+                return
+            if not any(hint in lowered for hint in hints) and not (
+                self._matches_vehicle_subject(lowered)
+                or self._is_primary_volume_query(lowered)
+                or " with " in lowered
+                or " without " in lowered
+            ):
+                return
+            matches = self._dedupe(matches)
+            if len(matches) == 1:
                 updated.append(
                     PlanFilter(
                         field=field,
-                        operator="contains",
-                        value=label,
+                        operator="stack_contains",
+                        value=matches[0],
                         rationale=f"Match the requested {field.replace('_', ' ')} component from the uploaded LRP.",
                     )
                 )
+                return
+            updated.append(
+                PlanFilter(
+                    field=field,
+                    operator="stack_contains_any",
+                    value=matches,
+                    rationale=f"Match any of the requested {field.replace('_', ' ')} components from the uploaded LRP.",
+                )
+            )
 
         add_for_field("tcu_details", TCU_HINTS)
         add_for_field("infotainment_details", INFOTAINMENT_HINTS)
@@ -1132,7 +1284,21 @@ class Planner:
             )
         ]
 
-    def _detect_metric(self, lowered: str, analysis_year: int | None, data_view: str) -> str:
+    def _detect_metric(
+        self,
+        lowered: str,
+        analysis_year: int | None,
+        data_view: str,
+        temporal_window: tuple[str, str, str] | None = None,
+    ) -> str:
+        if self._is_primary_volume_query(lowered):
+            if analysis_year is not None:
+                return f"volume_{analysis_year}"
+            if self._is_fine_grained_temporal_window(temporal_window):
+                return "launch_volume"
+            if "total volume" in lowered and "launch volume" not in lowered:
+                return "total_volume"
+            return "launch_volume"
         if analysis_year and "volume" in lowered:
             return f"volume_{analysis_year}"
         if data_view == "launch_event":
@@ -1212,6 +1378,7 @@ class Planner:
         data_view: str,
         analysis_mode: str,
         temporal_window: tuple[str, str, str] | None,
+        metric: str,
         milestone_columns: list[str],
         force_launch_event_window: bool = False,
     ) -> list[PlanFilter]:
@@ -1342,6 +1509,24 @@ class Planner:
                     value={"columns": milestone_columns, "start": start_date, "end": end_date},
                     rationale=f"Restrict derived milestone dates to the deterministic launch window {label}.",
                 )
+            )
+        elif temporal_window is not None and self._is_primary_volume_query(lowered) and self._is_fine_grained_temporal_window(temporal_window):
+            start_date, end_date, label = temporal_window
+            filters.extend(
+                [
+                    PlanFilter(
+                        field="sopm",
+                        operator=">=",
+                        value=start_date,
+                        rationale=f"Restrict launch-volume aggregation to vehicles with SOPM on or after {label}.",
+                    ),
+                    PlanFilter(
+                        field="sopm",
+                        operator="<",
+                        value=end_date,
+                        rationale=f"Restrict launch-volume aggregation to vehicles with SOPM before {end_date}.",
+                    ),
+                ]
             )
         elif launch_year_query:
             filters.append(
@@ -1485,10 +1670,10 @@ class Planner:
                     rationale="More than one TCU/connectivity stack is active for the vehicle.",
                 )
             )
-        if analysis_year and ("volume in" in lowered or "volume for" in lowered or "highest volume" in lowered or "weighted by volume" in lowered):
+        if metric.startswith("volume_") and analysis_year:
             filters.append(
                 PlanFilter(
-                    field=f"volume_{analysis_year}",
+                    field=metric,
                     operator=">",
                     value=0,
                     rationale=f"Use only rows with planned volume in {analysis_year}.",

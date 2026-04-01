@@ -17,6 +17,7 @@ from .models import (
     ClarifyRequest,
     ExportRequest,
     FeedbackRequest,
+    FeedbackReportResponse,
     FeedbackResponse,
     MilestoneDeliverable,
     MilestoneDeliverableListResponse,
@@ -36,9 +37,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-planner = Planner()
-executor = ExecutionEngine()
 learning_store = LearningStore()
+planner = Planner(learning_store=learning_store)
+executor = ExecutionEngine()
 milestone_store = MilestoneStore()
 
 
@@ -113,6 +114,12 @@ def feedback(request: FeedbackRequest) -> FeedbackResponse:
         correction=request.correction,
     )
     return FeedbackResponse(stored=True, record_id=stored["record_id"], stored_at=stored["stored_at"])
+
+
+@app.get("/feedback/report", response_model=FeedbackReportResponse)
+def feedback_report() -> FeedbackReportResponse:
+    report = learning_store.feedback_report()
+    return FeedbackReportResponse(**report)
 
 
 @app.post("/export")

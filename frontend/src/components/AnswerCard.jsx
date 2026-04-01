@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getMilestoneDeliverables } from "../api";
 
 function toTitleCase(value) {
@@ -35,6 +35,10 @@ function hasAnyFilter(filters, fields) {
 
 function queryStartsWith(query, prefixes) {
   return prefixes.some((prefix) => query.startsWith(prefix));
+}
+
+function isVolumeMetric(metric) {
+  return typeof metric === "string" && (metric === "launch_volume" || metric === "total_volume" || metric.startsWith("volume_"));
 }
 
 function groupRowsByEntity(answer) {
@@ -92,6 +96,8 @@ const BRIEF_MILESTONE_SEQUENCE = [
   { label: "SOP-3", field: "milestone_sop_3", code: "SOP_3" },
   { label: "LRM", field: "milestone_lrm", code: "LRM" },
   { label: "SOPM", field: "milestone_anchor_date", code: "SOPM" },
+  { label: "MCA", field: "mca_sopm", code: "MCA" },
+  { label: "MCA2", field: "mca2_sopm", code: "MCA2" },
 ];
 
 function milestoneLabelToCode(label) {
@@ -205,6 +211,32 @@ function buildVehicleDetails(rows) {
     { label: "Program", value: formatList(extractUniqueValues(rows, "program")) },
     { label: "OTA", value: formatList(extractUniqueValues(rows, "ota")) },
   ].filter((item) => item.value);
+}
+
+function buildVehicleBriefLaunchFootprint(rows) {
+  const now = new Date();
+  const items = rows
+    .map((row, index) => {
+      const launch = resolveRelevantLaunch([row]);
+      const launchDate = launch?.date ?? parseIsoDate(launch?.value || row.sopm || row.launch_date);
+      return {
+        row,
+        index,
+        launch,
+        launchDate,
+      };
+    })
+    .filter((item) => item.launchDate);
+
+  const historical = items
+    .filter((item) => item.launchDate < now)
+    .sort((left, right) => right.launchDate - left.launchDate);
+
+  const upcoming = items
+    .filter((item) => item.launchDate >= now)
+    .sort((left, right) => left.launchDate - right.launchDate);
+
+  return { historical, upcoming };
 }
 
 function buildLaunchBriefRows(rows) {
@@ -459,6 +491,36 @@ function determineCurrentMilestone(row) {
   return milestones.sort((left, right) => left.date - right.date)[0];
 }
 
+function resolveVehicleBriefMilestoneRow(rows) {
+  const datedCandidates = rows
+    .map((row) => {
+      const anchorDate = parseIsoDate(row.milestone_anchor_date || row.sopm || row.launch_date);
+      const latestLifecycleDate = [row.mca2_sopm, row.mca_sopm, row.sopm, row.launch_date]
+        .map((value) => parseIsoDate(value))
+        .filter(Boolean)
+        .sort((left, right) => right - left)[0] ?? null;
+      return { row, anchorDate, latestLifecycleDate };
+    })
+    .filter((item) => item.anchorDate || item.latestLifecycleDate);
+
+  if (datedCandidates.length === 0) {
+    return rows[0];
+  }
+
+  datedCandidates.sort((left, right) => {
+    const leftAnchor = left.anchorDate?.getTime() ?? -Infinity;
+    const rightAnchor = right.anchorDate?.getTime() ?? -Infinity;
+    if (leftAnchor !== rightAnchor) {
+      return rightAnchor - leftAnchor;
+    }
+    const leftLifecycle = left.latestLifecycleDate?.getTime() ?? -Infinity;
+    const rightLifecycle = right.latestLifecycleDate?.getTime() ?? -Infinity;
+    return rightLifecycle - leftLifecycle;
+  });
+
+  return datedCandidates[0].row;
+}
+
 function buildLaunchWindowCurrentMilestone(row) {
   const current = determineCurrentMilestone(row);
   if (!current) {
@@ -467,6 +529,30 @@ function buildLaunchWindowCurrentMilestone(row) {
   return {
     label: current.label,
     date: row[current.field],
+  };
+}
+
+function buildVehicleBriefTimelineFocus(rows, milestoneRow) {
+  const now = new Date();
+  const relevantLaunch = resolveRelevantLaunch(rows);
+  const relevantLabel = relevantLaunch?.label;
+  const relevantDate = relevantLaunch?.date ?? parseIsoDate(relevantLaunch?.value);
+
+  if (relevantLabel && BRIEF_MILESTONE_SEQUENCE.some((item) => item.label === relevantLabel)) {
+    return {
+      label: relevantLabel,
+      status: relevantDate && relevantDate > now ? "Next launch" : "Latest launch",
+    };
+  }
+
+  const currentMilestone = determineCurrentMilestone(milestoneRow);
+  if (!currentMilestone) {
+    return { label: null, status: "" };
+  }
+
+  return {
+    label: currentMilestone.label,
+    status: "Latest reached",
   };
 }
 
@@ -592,101 +678,37 @@ function renderMilestoneStrip(row) {
   );
 }
 
-function renderMilestoneTimeline(row, highlightedLabel) {
-  return <MilestoneTimeline row={row} highlightedLabel={highlightedLabel} />;
+function renderMilestoneTimeline(row, currentLabel, upcomingLabel, focusStatus) {
+  return <MilestoneTimeline row={row} currentLabel={currentLabel} upcomingLabel={upcomingLabel} focusStatus={focusStatus} />;
 }
 
-function MilestoneTimeline({ row, highlightedLabel }) {
+function MilestoneTimeline({ row, currentLabel, upcomingLabel, focusStatus }) {
   const timelineItems = BRIEF_MILESTONE_SEQUENCE.map((item) => ({
     label: item.label,
     value: row[item.field],
     date: parseIsoDate(row[item.field]),
   })).filter((item) => item.value);
-  const listRef = useRef(null);
-  const itemRefs = useRef([]);
-  const [markerLeft, setMarkerLeft] = useState(0);
-
   if (timelineItems.length === 0) {
     return null;
   }
 
-  const datedItems = timelineItems.filter((item) => item.date);
-  const now = new Date();
-  useEffect(() => {
-    const listElement = listRef.current;
-    if (!listElement || datedItems.length === 0) {
-      setMarkerLeft(0);
-      return;
-    }
-
-    const centers = datedItems.map((_, index) => {
-      const item = itemRefs.current[index];
-      if (!item) {
-        return null;
-      }
-      return item.offsetLeft + item.offsetWidth / 2;
-    });
-
-    const validCenters = centers.filter((value) => value !== null);
-    if (validCenters.length === 0) {
-      setMarkerLeft(0);
-      return;
-    }
-
-    if (datedItems.length === 1) {
-      setMarkerLeft(validCenters[0]);
-      return;
-    }
-
-    const milestoneIndex = datedItems.findIndex((item) => item.date >= now);
-    const nextIndex = milestoneIndex === -1 ? datedItems.length - 1 : milestoneIndex;
-    const prevIndex = nextIndex > 0 ? nextIndex - 1 : 0;
-    const previous = datedItems[prevIndex];
-    const next = datedItems[nextIndex];
-    const prevCenter = centers[prevIndex] ?? validCenters[0];
-    const nextCenter = centers[nextIndex] ?? validCenters.at(-1);
-
-    if (!previous || !next || prevCenter === null || nextCenter === null) {
-      setMarkerLeft(validCenters[0]);
-      return;
-    }
-
-    if (milestoneIndex <= 0) {
-      setMarkerLeft(prevCenter);
-      return;
-    }
-
-    if (milestoneIndex === -1 || next.date <= previous.date) {
-      setMarkerLeft(nextCenter);
-      return;
-    }
-
-    const fraction = (now.getTime() - previous.date.getTime()) / (next.date.getTime() - previous.date.getTime());
-    const clampedFraction = Math.min(Math.max(fraction, 0), 1);
-    setMarkerLeft(prevCenter + (nextCenter - prevCenter) * clampedFraction);
-  }, [datedItems, now]);
-
   return (
     <div className="milestone-timeline">
-      <div className="milestone-timeline-track" />
-      <div className="milestone-current-marker" style={{ left: `${markerLeft}px` }}>
-        <span className="milestone-timeline-pointer" />
-        <em>We&apos;re here</em>
-      </div>
-      <div className="milestone-timeline-list" ref={listRef}>
-        {timelineItems.map((item, index) => {
-          const isActive = item.label === highlightedLabel;
+      <div className="milestone-timeline-list">
+        <div className="milestone-timeline-track" />
+        {timelineItems.map((item) => {
+          const isActive = item.label === currentLabel;
+          const isUpcoming = item.label === upcomingLabel && upcomingLabel !== currentLabel;
           return (
             <div
-              className={`milestone-timeline-item${isActive ? " active" : ""}`}
+              className={`milestone-timeline-item${isActive ? " active" : ""}${isUpcoming ? " upcoming" : ""}`}
               key={`${item.label}-${item.value}`}
-              ref={(element) => {
-                itemRefs.current[index] = element;
-              }}
             >
               <span className="milestone-timeline-date">{formatValue(item.value)}</span>
               <div className="milestone-timeline-dot" />
               <strong className="milestone-timeline-label">{item.label}</strong>
+              {isActive ? <span className="milestone-timeline-status">{focusStatus || "Latest reached"}</span> : null}
+              {isUpcoming ? <span className="milestone-timeline-status upcoming">Next</span> : null}
             </div>
           );
         })}
@@ -822,26 +844,49 @@ function renderDistribution(answer) {
   if (!Array.isArray(answer) || answer.length === 0) {
     return <p className="empty-state">No grouped results available.</p>;
   }
-  const max = Math.max(...answer.map((item) => item.value), 1);
+  const total = answer.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  const sorted = [...answer].sort((left, right) => Number(right.value || 0) - Number(left.value || 0));
+  const max = Math.max(...sorted.map((item) => Number(item.value || 0)), 1);
+  const leader = sorted[0];
+
+  function distributionLabel(item) {
+    if (item.car_family || item.brand || item.commercial_name) {
+      return [item.car_family, item.brand, item.commercial_name].filter(Boolean).join(" / ");
+    }
+    if (item.region_logic || item.region_value) {
+      return [item.region_logic, item.region_value].filter(Boolean).join(" / ");
+    }
+    return Object.entries(item)
+      .filter(([key]) => key !== "value")
+      .map(([, value]) => formatValue(value))
+      .join(" / ");
+  }
+
   return (
-    <div className="distribution-list">
-      {answer.map((item, index) => {
-        const label = Object.entries(item)
-          .filter(([key]) => key !== "value")
-          .map(([, value]) => formatValue(value))
-          .join(" / ");
-        return (
-          <div className="distribution-row" key={`${label}-${index}`}>
-            <div className="distribution-meta">
-              <span>{label || "Result"}</span>
-              <strong>{formatValue(item.value)}</strong>
+    <div className="insight-stack">
+      <div className="hero-insight">
+        <span className="insight-kicker">Distribution</span>
+        <strong>{leader ? `${distributionLabel(leader)} leads` : "Grouped result"}</strong>
+        <p>{formatValue(total)} total across the current grouping.</p>
+      </div>
+      <div className="distribution-list">
+        {sorted.map((item, index) => {
+          const label = distributionLabel(item);
+          const share = total > 0 ? `${Math.round((Number(item.value || 0) / total) * 100)}%` : "0%";
+          return (
+            <div className="distribution-row" key={`${label}-${index}`}>
+              <div className="distribution-meta">
+                <span>{label || "Result"}</span>
+                <strong>{formatValue(item.value)}</strong>
+              </div>
+              <div className="distribution-bar">
+                <div style={{ width: `${(Number(item.value || 0) / max) * 100}%` }} />
+              </div>
+              <p className="distribution-share">{share} of the current result</p>
             </div>
-            <div className="distribution-bar">
-              <div style={{ width: `${(item.value / max) * 100}%` }} />
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1074,8 +1119,11 @@ function VehicleBrief({ groups, query }) {
       </div>
       {groups.map((rows) => {
         const head = rows[0];
-        const milestoneContext = buildCurrentAndUpcomingMilestones(head, deliverables);
+        const milestoneRow = resolveVehicleBriefMilestoneRow(rows);
+        const milestoneContext = buildCurrentAndUpcomingMilestones(milestoneRow, deliverables);
+        const timelineFocus = buildVehicleBriefTimelineFocus(rows, milestoneRow);
         const vehicleDetails = buildVehicleDetails(rows);
+        const launchFootprint = buildVehicleBriefLaunchFootprint(rows);
         return (
           <section className="vehicle-brief" key={`${head.car_family}-${head.commercial_name}`}>
             <div className="vehicle-hero">
@@ -1101,7 +1149,7 @@ function VehicleBrief({ groups, query }) {
             {milestoneContext.current || milestoneContext.upcoming ? (
               <section className="brief-section">
                 <div className="brief-section-header">
-                  <span className="section-kicker">Current Milestone</span>
+                  <span className="section-kicker">Milestone Deliverables</span>
                 </div>
                 <div className="deliverable-brief dual-milestone-cards">
                   {milestoneContext.current ? (
@@ -1157,7 +1205,12 @@ function VehicleBrief({ groups, query }) {
               <div className="brief-section-header">
                 <span className="section-kicker">Milestones</span>
               </div>
-              {renderMilestoneTimeline(head, milestoneContext.upcoming?.label)}
+              {renderMilestoneTimeline(
+                milestoneRow,
+                timelineFocus.label || milestoneContext.current?.label,
+                milestoneContext.upcoming?.label,
+                timelineFocus.status
+              )}
             </section>
 
             <section className="brief-section">
@@ -1179,19 +1232,53 @@ function VehicleBrief({ groups, query }) {
                 <div className="brief-section-header">
                   <span className="section-kicker">Launch Footprint</span>
                 </div>
-                <div className="launch-row-list">
-                  {rows.map((row, index) => (
-                    <div className="launch-row-card" key={`${head.car_family}-${row.region_of_sales ?? ""}-${index}`}>
-                      <div>
-                        <strong>{formatValue(resolveRelevantLaunch([row])?.value || row.sopm)}</strong>
-                        <p>{[row.region_of_sales, row.initial_prod_zone].filter(Boolean).join(" / ") || "Region not provided"}</p>
+                <div className="launch-footprint-sections">
+                  {launchFootprint.historical.length ? (
+                    <div className="launch-footprint-group">
+                      <div className="brief-section-header">
+                        <strong>Historical Launches</strong>
                       </div>
-                      <div className="chip-row">
-                        {row.tcu_details ? <span className="data-chip">{row.tcu_details}</span> : null}
-                        {row.infotainment_details ? <span className="data-chip">{row.infotainment_details}</span> : null}
+                      <div className="launch-footprint-grid">
+                        {launchFootprint.historical.map(({ row, index, launch }) => (
+                          <article className="launch-footprint-card" key={`${head.car_family}-historical-${row.region_of_sales ?? ""}-${index}`}>
+                            <div className="launch-footprint-card-top">
+                              <span className="launch-footprint-family">{row.car_family || "Not provided"}</span>
+                              <span className="data-chip">{formatLaunchStageLabel(launch?.label || "SOPM")}</span>
+                            </div>
+                            <p className="launch-footprint-date">{formatValue(launch?.value || row.sopm)}</p>
+                            <ul className="launch-footprint-list">
+                              <li>Region: {row.region_of_sales || "Not provided"}</li>
+                              <li>EEA: {row.eea || "Not provided"}</li>
+                              <li>TCU: {row.tcu_details || "Not provided"}</li>
+                            </ul>
+                          </article>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  ) : null}
+                  {launchFootprint.upcoming.length ? (
+                    <div className="launch-footprint-group">
+                      <div className="brief-section-header">
+                        <strong>Upcoming Launches</strong>
+                      </div>
+                      <div className="launch-footprint-grid">
+                        {launchFootprint.upcoming.map(({ row, index, launch }) => (
+                          <article className="launch-footprint-card" key={`${head.car_family}-upcoming-${row.region_of_sales ?? ""}-${index}`}>
+                            <div className="launch-footprint-card-top">
+                              <span className="launch-footprint-family">{row.car_family || "Not provided"}</span>
+                              <span className="data-chip">{formatLaunchStageLabel(launch?.label || "SOPM")}</span>
+                            </div>
+                            <p className="launch-footprint-date">{formatValue(launch?.value || row.sopm)}</p>
+                            <ul className="launch-footprint-list">
+                              <li>Region: {row.region_of_sales || "Not provided"}</li>
+                              <li>EEA: {row.eea || "Not provided"}</li>
+                              <li>TCU: {row.tcu_details || "Not provided"}</li>
+                            </ul>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </section>
             ) : null}
@@ -1390,10 +1477,19 @@ function inferViewMode(response) {
   const answer = response?.answer;
   const query = response?.query?.toLowerCase() ?? "";
   const filters = response?.plan?.filters ?? [];
+  const groupBy = response?.plan?.group_by ?? [];
+  const metric = response?.plan?.metric ?? "";
   const isVehicleIntent =
     query.includes("tell me about") ||
     query.includes("details for") ||
     hasAnyFilter(filters, ["car_family", "commercial_name", "car_family_code"]);
+  const isRegionalGrouping =
+    response?.answer_type === "distribution" &&
+    (
+      groupBy.some((item) => ["region_of_sales", "initial_prod_zone", "project_responsible_region", "region_logic", "region_value"].includes(item)) ||
+      answer?.some?.((row) => "region_of_sales" in row || "region_value" in row || "initial_prod_zone" in row)
+    );
+  const isRegionalVolumeDistribution = response?.answer_type === "distribution" && isRegionalGrouping && isVolumeMetric(metric);
 
   if (!Array.isArray(answer)) {
     return { id: "structured_table", label: "Structured Table", description: "Default deterministic row view." };
@@ -1410,6 +1506,9 @@ function inferViewMode(response) {
   if (answer.some((row) => Object.keys(row).some((key) => key.startsWith("milestone_")))) {
     return { id: "milestone_plan", label: "Milestone Plan", description: "Shows the backward-calculated milestone cadence from the selected anchor date." };
   }
+  if ((response?.answer_type === "distribution" && !isRegionalGrouping) || isRegionalVolumeDistribution) {
+    return { id: "distribution_chart", label: "Distribution Chart", description: "Ranks grouped results in a labeled comparison chart." };
+  }
   if (query.includes("compare") || query.includes(" vs ")) {
     return { id: "compare", label: "Compare", description: "Puts a few matched vehicle profiles side by side." };
   }
@@ -1425,7 +1524,7 @@ function inferViewMode(response) {
   if (hasAnyFilter(filters, ["tcu_details", "infotainment_details", "ota", "eea", "architecture"])) {
     return { id: "component_match", label: "Component Match", description: "Focuses on the matched stack, readiness, or architecture combination." };
   }
-  if (response?.answer_type === "distribution" || hasAnyFilter(filters, ["region_of_sales", "initial_prod_zone", "project_responsible_region"])) {
+  if (isRegionalGrouping || hasAnyFilter(filters, ["region_of_sales", "initial_prod_zone", "project_responsible_region"])) {
     return { id: "regional_footprint", label: "Regional Footprint", description: "Shows how the current result spreads across regions or production zones." };
   }
   if (answer.length <= 12) {
@@ -1457,6 +1556,8 @@ function renderViewMode(mode, response) {
       return renderComponentMatch(answer, response);
     case "regional_footprint":
       return renderRegionalFootprint(answer, response);
+    case "distribution_chart":
+      return renderDistribution(answer);
     case "launch_cards":
       return renderLaunchCards(answer);
     case "structured_table":

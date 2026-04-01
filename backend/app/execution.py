@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 import duckdb
@@ -61,6 +62,19 @@ class ExecutionEngine:
         if plan.intent == "distribution" and plan.group_by[:2] == ["region_logic", "region_value"]:
             repeat_count = 2 if plan.region_scope in {"ANY", "BOTH"} else 1
             execution_parameters = parameters * repeat_count
+        elif plan.intent == "distribution" and plan.group_by == ["comparison_value"]:
+            comparison_filter = self._comparison_filter(plan)
+            if comparison_filter is not None:
+                execution_parameters = []
+                for value in comparison_filter["values"]:
+                    execution_parameters.append(value)
+                    execution_parameters.extend(parameters)
+                    if comparison_filter["operator"] == "stack_contains_any":
+                        execution_parameters.append(self._stack_component_pattern(str(value)))
+                    elif comparison_filter["operator"] == "contains_any":
+                        execution_parameters.append(f"%{str(value).lower()}%")
+                    else:
+                        execution_parameters.append(value)
         result = connection.execute(sql, execution_parameters).fetchdf()
         connection.close()
 
@@ -176,6 +190,11 @@ class ExecutionEngine:
         if operator == "contains_any":
             clauses = [f"LOWER({field}) LIKE ?" for _ in value]
             return ("(" + " OR ".join(clauses) + ")", [f"%{str(item).lower()}%" for item in value])
+        if operator == "stack_contains":
+            return (f"REGEXP_MATCHES(LOWER({field}), ?)", [self._stack_component_pattern(str(value))])
+        if operator == "stack_contains_any":
+            clauses = [f"REGEXP_MATCHES(LOWER({field}), ?)" for _ in value]
+            return ("(" + " OR ".join(clauses) + ")", [self._stack_component_pattern(str(item)) for item in value])
         if operator == "not_contains":
             return (f"LOWER({field}) NOT LIKE ?", [f"%{str(value).lower()}%"])
         if operator == "in":
@@ -201,6 +220,8 @@ class ExecutionEngine:
             """
 
         if plan.intent == "distribution":
+            if plan.group_by == ["comparison_value"]:
+                return self._build_comparison_distribution_sql(where_sql, plan, table_name)
             if plan.group_by[:2] == ["region_logic", "region_value"]:
                 return self._build_region_distribution_sql(where_sql, plan.region_scope, plan.metric, table_name)
             group_sql = ", ".join(plan.group_by)
@@ -265,6 +286,44 @@ class ExecutionEngine:
         return f"""
             {union_sql}
             ORDER BY region_logic, value DESC, region_value
+        """
+
+    def _build_comparison_distribution_sql(self, where_sql: str, plan: QueryPlan, table_name: str) -> str:
+        comparison_filter = self._comparison_filter(plan)
+        if comparison_filter is None:
+            aggregate = self._metric_aggregate(plan.metric)
+            return f"""
+                SELECT 'Result' AS comparison_value, {aggregate} AS value
+                FROM {table_name}
+                WHERE {where_sql}
+                ORDER BY value DESC, comparison_value
+            """
+
+        field = comparison_filter["field"]
+        operator = comparison_filter["operator"]
+        values = comparison_filter["values"]
+        aggregate = self._metric_aggregate(plan.metric)
+        selects: list[str] = []
+        for value in values:
+            if operator == "stack_contains_any":
+                clause = f"REGEXP_MATCHES(LOWER({field}), ?)"
+            elif operator == "contains_any":
+                clause = f"LOWER({field}) LIKE ?"
+            elif operator == "in":
+                clause = f"{field} = ?"
+            else:
+                clause = f"{field} = ?"
+            selects.append(
+                f"""
+                SELECT ? AS comparison_value, {aggregate} AS value
+                FROM {table_name}
+                WHERE {where_sql} AND {clause}
+                """
+            )
+        union_sql = "\nUNION ALL\n".join(selects)
+        return f"""
+            {union_sql}
+            ORDER BY value DESC, comparison_value
         """
 
     def _build_list_sql(self, plan: QueryPlan, where_sql: str, table_name: str) -> str:
@@ -332,7 +391,9 @@ class ExecutionEngine:
 
     def _shape_answer(self, plan: QueryPlan, result: pd.DataFrame) -> Any:
         if plan.intent == "count":
-            return {"value": int(result.iloc[0]["value"]) if not result.empty else 0}
+            if result.empty or pd.isna(result.iloc[0]["value"]):
+                return {"value": 0}
+            return {"value": int(result.iloc[0]["value"])}
         source = result.copy()
         formatted = result.copy().astype(object)
         for column in source.columns:
@@ -342,3 +403,13 @@ class ExecutionEngine:
                 series = source[column].where(source[column].notna(), "").astype(object)
             formatted.loc[:, column] = series
         return formatted.to_dict(orient="records")
+
+    def _stack_component_pattern(self, label: str) -> str:
+        escaped = re.escape(str(label).lower().strip())
+        return rf"(^|,\s*){escaped}(?:\s*\([^)]*\))?(?:,\s*|$)"
+
+    def _comparison_filter(self, plan: QueryPlan) -> dict[str, Any] | None:
+        for item in plan.filters:
+            if item.operator in {"stack_contains_any", "contains_any", "in"} and isinstance(item.value, list) and len(item.value) > 1:
+                return {"field": item.field, "operator": item.operator, "values": list(item.value)}
+        return None

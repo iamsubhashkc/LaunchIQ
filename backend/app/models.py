@@ -7,7 +7,21 @@ from pydantic import BaseModel, Field
 
 
 AggregationType = Literal["list", "count", "distribution", "timeline"]
-FilterOperator = Literal["=", "!=", "in", "not_in", "contains", "contains_any", "not_contains", "<=", ">=", "<", ">"]
+FilterOperator = Literal[
+    "=",
+    "!=",
+    "in",
+    "not_in",
+    "contains",
+    "contains_any",
+    "stack_contains",
+    "stack_contains_any",
+    "not_contains",
+    "<=",
+    ">=",
+    "<",
+    ">",
+]
 PlannerMode = Literal["heuristic", "hybrid", "llm"]
 
 
@@ -46,6 +60,15 @@ class PlanSnapshot(BaseModel):
     reasoning_summary: str = ""
 
 
+class FeedbackHint(BaseModel):
+    query: str
+    rating: Literal["helpful", "incorrect", "needs_more_detail"]
+    correction: str | None = None
+    match_type: Literal["exact", "similar"] = "similar"
+    score: float = 0.0
+    stored_at: datetime | None = None
+
+
 class PlannerDiagnostics(BaseModel):
     query_frame: str = "unknown"
     grounding_status: Literal["grounded", "salvageable", "ungrounded"] = "ungrounded"
@@ -53,6 +76,7 @@ class PlannerDiagnostics(BaseModel):
     heuristic_baseline: PlanSnapshot
     llm_suggestion: LlmSuggestion | None = None
     final_resolved_plan: PlanSnapshot
+    feedback_context: list[FeedbackHint] = Field(default_factory=list)
     decision_notes: list[str] = Field(default_factory=list)
 
 
@@ -127,6 +151,22 @@ class FeedbackResponse(BaseModel):
     stored: bool
     record_id: str
     stored_at: datetime
+
+
+class FeedbackReportEntry(BaseModel):
+    query: str
+    rating: Literal["helpful", "incorrect", "needs_more_detail"]
+    correction: str | None = None
+    stored_at: datetime
+
+
+class FeedbackReportResponse(BaseModel):
+    total_feedback: int
+    helpful_count: int
+    incorrect_count: int
+    needs_more_detail_count: int
+    top_corrections: list[str] = Field(default_factory=list)
+    recent_feedback: list[FeedbackReportEntry] = Field(default_factory=list)
 
 
 class MilestoneDeliverable(BaseModel):

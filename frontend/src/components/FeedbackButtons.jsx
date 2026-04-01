@@ -8,9 +8,16 @@ export function FeedbackButtons({ disabled, onSubmit, status }) {
       <div className="panel-header">
         <div>
           <h2>Review This Answer</h2>
-          <p>Capture corrections or gaps so LaunchIQ can improve future planning behavior.</p>
+          <p>Share what was wrong or missing in this answer. Use feedback for query understanding, filters, grouping, or missing detail, not for UI styling issues.</p>
         </div>
       </div>
+
+      <textarea
+        rows={3}
+        placeholder="Optional note: explain what LaunchIQ misunderstood, filtered incorrectly, grouped incorrectly, or left out. Skip UI/layout comments here."
+        value={correction}
+        onChange={(event) => setCorrection(event.target.value)}
+      />
 
       <div className="feedback-grid">
         <button disabled={disabled} onClick={() => onSubmit("helpful", correction)}>
@@ -24,12 +31,6 @@ export function FeedbackButtons({ disabled, onSubmit, status }) {
         </button>
       </div>
 
-      <textarea
-        rows={3}
-        placeholder="Optional note on what should change in the answer, logic, or interpretation."
-        value={correction}
-        onChange={(event) => setCorrection(event.target.value)}
-      />
       <p className="feedback-status">{status || "Feedback is stored for future planner refinement."}</p>
     </section>
   );

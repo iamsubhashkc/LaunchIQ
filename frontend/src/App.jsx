@@ -1,27 +1,28 @@
 import { useEffect, useState } from "react";
-import { clarifyLaunchIQ, exportLaunchIQResult, queryLaunchIQ, sendFeedback } from "./api";
+import { clarifyLaunchIQ, exportLaunchIQResult, getFeedbackReport, queryLaunchIQ, sendFeedback } from "./api";
 import { AnswerCard } from "./components/AnswerCard";
 import { ChatInput } from "./components/ChatInput";
 import { ClarificationBox } from "./components/ClarificationBox";
 import { ExplanationPanel } from "./components/ExplanationPanel";
 import { FeedbackButtons } from "./components/FeedbackButtons";
-
-const SAMPLE_QUERIES = [
-  "Which vehicles are launching in the next 24 months across RoS and IPZ?",
-  "Tell me about Jeep Recon",
-  "What are the X0 deliverables for F2X, and when is the X0 for F2X?",
-];
+import { FeedbackReportPanel } from "./components/FeedbackReportPanel";
+import stellantisLogo from "./assets/stellantis-logo.svg";
 const PLANNER_MODE_KEY = "launchiq_planner_mode";
 
 export default function App() {
-  const [query, setQuery] = useState(SAMPLE_QUERIES[0]);
+  const [query, setQuery] = useState("");
   const [response, setResponse] = useState(null);
   const [pendingClarification, setPendingClarification] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [feedbackState, setFeedbackState] = useState("");
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [activeView, setActiveView] = useState("workspace");
   const [exporting, setExporting] = useState(false);
+  const [feedbackReport, setFeedbackReport] = useState(null);
+  const [feedbackReportLoading, setFeedbackReportLoading] = useState(false);
+  const [feedbackReportError, setFeedbackReportError] = useState("");
+  const [feedbackReportLoaded, setFeedbackReportLoaded] = useState(false);
   const [plannerMode, setPlannerMode] = useState(() => {
     if (typeof window === "undefined") {
       return "heuristic";
@@ -31,6 +32,8 @@ export default function App() {
   });
 
   const hasAnswer = response?.status === "ok";
+  const shouldShowWorkspace = loading || Boolean(response);
+  const shouldShowFeedback = hasAnswer && !feedbackSubmitted;
 
   const summary = response?.plan
     ? response.plan.reasoning_summary || "Deterministic execution completed."
@@ -42,10 +45,31 @@ export default function App() {
     }
   }, [plannerMode]);
 
+  useEffect(() => {
+    if (activeView === "feedback" && !feedbackReportLoaded) {
+      void loadFeedbackReport();
+    }
+  }, [activeView, feedbackReportLoaded]);
+
+  async function loadFeedbackReport() {
+    setFeedbackReportLoading(true);
+    setFeedbackReportError("");
+    try {
+      const payload = await getFeedbackReport();
+      setFeedbackReport(payload);
+      setFeedbackReportLoaded(true);
+    } catch (requestError) {
+      setFeedbackReportError(requestError.message);
+    } finally {
+      setFeedbackReportLoading(false);
+    }
+  }
+
   async function handleSubmit(nextQuery) {
     setLoading(true);
     setError("");
     setFeedbackState("");
+    setFeedbackSubmitted(false);
     setPendingClarification(null);
     setActiveView("workspace");
     try {
@@ -68,6 +92,8 @@ export default function App() {
     }
     setLoading(true);
     setError("");
+    setFeedbackState("");
+    setFeedbackSubmitted(false);
     try {
       const payload = await clarifyLaunchIQ(pendingClarification.query, answers, plannerMode);
       setPendingClarification(null);
@@ -86,8 +112,14 @@ export default function App() {
     setFeedbackState("Saving feedback...");
     try {
       await sendFeedback(response.query, response.plan, response.answer, rating, correction);
-      setFeedbackState("Feedback stored for future planner tuning.");
+      setFeedbackState("Thank you. Feedback saved for future planner tuning.");
+      setFeedbackSubmitted(true);
+      setFeedbackReportLoaded(false);
+      if (activeView === "feedback") {
+        void loadFeedbackReport();
+      }
     } catch (requestError) {
+      setFeedbackSubmitted(false);
       setFeedbackState(`Feedback failed: ${requestError.message}`);
     }
   }
@@ -111,9 +143,8 @@ export default function App() {
     <div className="app-shell">
       <header className="masthead">
         <div className="brand-lockup">
-          <div className="brand-badge">
-            <span className="brand-mark">LaunchIQ</span>
-          </div>
+          <img className="brand-logo" src={stellantisLogo} alt="Stellantis" />
+          <span className="brand-wordmark">LaunchIQ</span>
         </div>
       </header>
 
@@ -133,6 +164,13 @@ export default function App() {
           >
             Analysis
           </button>
+          <button
+            type="button"
+            className={activeView === "feedback" ? "view-switch-button active" : "view-switch-button"}
+            onClick={() => setActiveView("feedback")}
+          >
+            Feedback Report
+          </button>
         </div>
         {response?.query ? (
           <div className="active-query-pill">
@@ -146,7 +184,6 @@ export default function App() {
         query={query}
         onQueryChange={setQuery}
         onSubmit={handleSubmit}
-        sampleQueries={SAMPLE_QUERIES}
         loading={loading}
         plannerMode={plannerMode}
         onPlannerModeChange={setPlannerMode}
@@ -158,17 +195,42 @@ export default function App() {
         <ClarificationBox questions={pendingClarification.clarification} onSubmit={handleClarify} loading={loading} />
       ) : null}
 
-      {activeView === "workspace" ? (
+      {activeView === "workspace" && shouldShowWorkspace ? (
         <div className="workspace-stage">
           <AnswerCard response={response} loading={loading} onExport={handleExport} exporting={exporting} />
         </div>
-      ) : (
+      ) : activeView === "analysis" ? (
         <div className="analysis-stage">
           <ExplanationPanel plan={response?.plan} explanation={response?.explanation} summary={summary} />
         </div>
-      )}
+      ) : activeView === "feedback" ? (
+        <div className="analysis-stage">
+          <FeedbackReportPanel
+            report={feedbackReport}
+            loading={feedbackReportLoading}
+            error={feedbackReportError}
+            onRefresh={loadFeedbackReport}
+          />
+        </div>
+      ) : null}
 
-      <FeedbackButtons disabled={!hasAnswer || loading} onSubmit={handleFeedback} status={feedbackState} />
+      {feedbackSubmitted ? (
+        <div className="status-card success-card feedback-thanks-card">
+          <div className="feedback-thanks">
+            <span className="feedback-check" aria-hidden="true">
+              ✓
+            </span>
+            <div>
+              <strong>Thank you.</strong>
+              <p>{feedbackState || "Your feedback was saved for future planner tuning."}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {shouldShowFeedback ? (
+        <FeedbackButtons disabled={!hasAnswer || loading} onSubmit={handleFeedback} status={feedbackState} />
+      ) : null}
     </div>
   );
 }

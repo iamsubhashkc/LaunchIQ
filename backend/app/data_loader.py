@@ -141,6 +141,7 @@ class LaunchDataLoader:
                 "total_volume": raw[volume_columns].fillna(0).sum(axis=1),
             }
         )
+        frame = self._sanitize_lifecycle_dates(frame)
         for column, year in zip(volume_columns, volume_years, strict=False):
             frame[f"volume_{year}"] = raw[column].fillna(0)
 
@@ -290,3 +291,26 @@ class LaunchDataLoader:
         if not event_frames:
             return pd.DataFrame()
         return pd.concat(event_frames, ignore_index=True)
+
+    def _sanitize_lifecycle_dates(self, frame: pd.DataFrame) -> pd.DataFrame:
+        sanitized = frame.copy()
+
+        # Some uploaded LRP files contain ghost Excel-era dates (for example 1930/1931)
+        # in transition columns. Treat lifecycle dates that break basic ordering rules as missing.
+        if "sopm" in sanitized.columns and "mca_sopm" in sanitized.columns:
+            invalid_mca = sanitized["mca_sopm"].notna() & sanitized["sopm"].notna() & (sanitized["mca_sopm"] < sanitized["sopm"])
+            sanitized.loc[invalid_mca, "mca_sopm"] = pd.NaT
+
+        if "sopm" in sanitized.columns and "mca2_sopm" in sanitized.columns:
+            invalid_mca2_vs_sopm = sanitized["mca2_sopm"].notna() & sanitized["sopm"].notna() & (sanitized["mca2_sopm"] < sanitized["sopm"])
+            sanitized.loc[invalid_mca2_vs_sopm, "mca2_sopm"] = pd.NaT
+
+        if "mca_sopm" in sanitized.columns and "mca2_sopm" in sanitized.columns:
+            invalid_mca2_vs_mca = sanitized["mca2_sopm"].notna() & sanitized["mca_sopm"].notna() & (sanitized["mca2_sopm"] < sanitized["mca_sopm"])
+            sanitized.loc[invalid_mca2_vs_mca, "mca2_sopm"] = pd.NaT
+
+        if "sopm" in sanitized.columns and "eop" in sanitized.columns:
+            invalid_eop = sanitized["eop"].notna() & sanitized["sopm"].notna() & (sanitized["eop"] < sanitized["sopm"])
+            sanitized.loc[invalid_eop, "eop"] = pd.NaT
+
+        return sanitized

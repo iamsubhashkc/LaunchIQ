@@ -66,6 +66,22 @@ export function ExplanationPanel({ plan, explanation, summary }) {
           )}
         </div>
 
+        <div className="explanation-card">
+          <span className="label">Feedback Context</span>
+          {diagnostics?.feedback_context?.length ? (
+            <ul className="detail-list">
+              {diagnostics.feedback_context.map((item, index) => (
+                <li key={`${item.query}-${index}`}>
+                  {item.rating} match ({item.match_type}, score {Number(item.score || 0).toFixed(2)}): "{item.query}"
+                  {item.correction ? ` -> ${item.correction}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No relevant prior feedback was used for this plan.</p>
+          )}
+        </div>
+
         {renderPlanSnapshot("Final Resolved Plan", diagnostics?.final_resolved_plan || plan)}
 
         <div className="explanation-card">

@@ -4,14 +4,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
+import pandas as pd
 
 import app.main as main_module
+from app.data_loader import LaunchDataLoader
+from app.learning import LearningStore
 from app.main import app
 from app.milestone_store import MilestoneStore
 from app.planner import Planner
 
 
 client = TestClient(app)
+
+
+def _loaded_frame():
+    return LaunchDataLoader().load().frame.copy()
 
 
 def test_query_returns_distribution_for_region_question() -> None:
@@ -130,7 +137,7 @@ def test_query_applies_brand_region_and_year_filters_together() -> None:
     assert payload["status"] == "ok"
     assert payload["answer_type"] == "list"
     assert payload["plan"]["data_view"] == "launch_event"
-    assert len(payload["answer"]) == 4
+    assert len(payload["answer"]) == 3
     assert {row["brand"] for row in payload["answer"]} == {"JEEP"}
     assert {row["car_family"] for row in payload["answer"]} == {"J516", "J5O", "J-WL"}
 
@@ -194,7 +201,7 @@ def test_query_applies_eea_filter_without_accidental_extra_region_filter() -> No
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert payload["plan"]["data_view"] == "launch_event"
-    assert len(payload["answer"]) == 11
+    assert len(payload["answer"]) == 8
     assert {row["eea"] for row in payload["answer"]} == {"Atlantis High"}
     assert {row["car_family"] for row in payload["answer"]} == {"M189", "J5O", "LD Pickup (DTe)", "M182", "J-WL"}
 
@@ -213,7 +220,7 @@ def test_query_with_tbd_ota_does_not_accidentally_add_tbd_region_filter() -> Non
         for item in payload["plan"]["filters"]
     )
     assert payload["plan"]["data_view"] == "launch_event"
-    assert len(payload["answer"]) == 5
+    assert len(payload["answer"]) == 3
     assert {row["car_family"] for row in payload["answer"]} == {"OV51", "OV52", "P54"}
 
 
@@ -300,6 +307,7 @@ def test_natural_query_can_combine_brand_and_commercial_name() -> None:
     assert payload["answer"]
     assert {row["brand"] for row in payload["answer"]} == {"JEEP"}
     assert {row["commercial_name"] for row in payload["answer"]} == {"Recon"}
+    assert all(not row.get("mca_sopm") for row in payload["answer"])
 
 
 def test_natural_query_prefers_car_family_over_program_collision() -> None:
@@ -355,8 +363,12 @@ def test_query_matches_multiple_tcu_components_for_vehicle() -> None:
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert any(item["field"] == "car_family" and item["value"] == "F1H" for item in payload["plan"]["filters"])
-    assert any(item["field"] == "tcu_details" and item["value"] == "R2eX" for item in payload["plan"]["filters"])
-    assert any(item["field"] == "tcu_details" and item["value"] == "ATB4S V2" for item in payload["plan"]["filters"])
+    assert any(
+        item["field"] == "tcu_details"
+        and item["operator"] == "stack_contains_any"
+        and set(item["value"]) == {"R2eX", "ATB4S V2"}
+        for item in payload["plan"]["filters"]
+    )
     assert {row["region_of_sales"] for row in payload["answer"]} == {"SAM"}
 
 
@@ -399,6 +411,161 @@ def test_query_returns_volume_distribution_by_region_for_year() -> None:
     assert payload["status"] == "ok"
     assert payload["answer_type"] == "distribution"
     assert payload["answer"]
+
+
+def test_query_returns_exact_tcu_volume_for_year() -> None:
+    frame = _loaded_frame()
+    mask = frame["tcu_details"].fillna("").str.lower().str.contains(r"(?:^|,\s*)tbm\ 2\.0(?:\s*\([^)]*\))?(?:,\s*|$)", regex=True)
+    expected = int(round(frame.loc[mask & (frame["volume_2026"] > 0), "volume_2026"].sum()))
+
+    response = client.post(
+        "/query",
+        json={"query": "What is the Volume of TBM 2.0 vehicles in 2026?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "count"
+    assert payload["plan"]["metric"] == "volume_2026"
+    assert any(item["field"] == "tcu_details" and item["operator"] == "stack_contains" and item["value"] == "TBM 2.0" for item in payload["plan"]["filters"])
+    assert payload["answer"]["value"] == expected
+
+
+def test_query_returns_multi_tcu_volume_with_or_semantics_for_year() -> None:
+    frame = _loaded_frame()
+    stack_text = frame["tcu_details"].fillna("").str.lower()
+    mask = (
+        stack_text.str.contains(r"(?:^|,\s*)tbm\ 2\.0(?:\s*\([^)]*\))?(?:,\s*|$)", regex=True)
+        | stack_text.str.contains(r"(?:^|,\s*)tbm\ 2\.0h(?:\s*\([^)]*\))?(?:,\s*|$)", regex=True)
+    )
+    expected = int(round(frame.loc[mask & (frame["volume_2026"] > 0), "volume_2026"].sum()))
+
+    response = client.post(
+        "/query",
+        json={"query": "What is the Volume of TBM 2.0 and TBM 2.0H vehicles in 2026?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "count"
+    assert any(
+        item["field"] == "tcu_details"
+        and item["operator"] == "stack_contains_any"
+        and set(item["value"]) == {"TBM 2.0", "TBM 2.0H"}
+        for item in payload["plan"]["filters"]
+    )
+    assert payload["answer"]["value"] == expected
+
+
+def test_query_returns_brand_launch_volume_for_quarter() -> None:
+    frame = _loaded_frame()
+    sopm = frame["sopm"]
+    mask = (frame["brand"] == "JEEP") & (sopm >= pd.Timestamp("2026-04-01")) & (sopm < pd.Timestamp("2026-07-01"))
+    expected = int(round(frame.loc[mask, "launch_volume"].sum()))
+
+    response = client.post(
+        "/query",
+        json={"query": "What is the Volume of Jeep Vehicles in 26Q2?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "count"
+    assert payload["plan"]["metric"] == "launch_volume"
+    assert any(item["field"] == "brand" and item["value"] == "JEEP" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "sopm" and item["operator"] == ">=" and item["value"] == "2026-04-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "sopm" and item["operator"] == "<" and item["value"] == "2026-07-01" for item in payload["plan"]["filters"])
+    assert payload["answer"]["value"] == expected
+
+
+def test_query_returns_ranked_vehicle_volume_distribution_for_year() -> None:
+    frame = _loaded_frame()
+    expected = (
+        frame.loc[frame["volume_2026"] > 0, ["car_family", "brand", "commercial_name", "volume_2026"]]
+        .groupby(["car_family", "brand", "commercial_name"], as_index=False)["volume_2026"]
+        .sum()
+        .sort_values(["volume_2026", "car_family", "commercial_name"], ascending=[False, True, True])
+        .iloc[0]
+    )
+
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles have the highest launch volume in 2026?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "distribution"
+    assert payload["plan"]["data_view"] == "vehicle"
+    assert payload["plan"]["group_by"] == ["car_family", "brand", "commercial_name"]
+    first = payload["answer"][0]
+    assert first["car_family"] == expected["car_family"]
+    assert first["brand"] == expected["brand"]
+    assert first["commercial_name"] == expected["commercial_name"]
+    assert int(round(first["value"])) == int(round(expected["volume_2026"]))
+
+
+def test_query_returns_launch_volume_distribution_by_ros_for_year() -> None:
+    frame = _loaded_frame()
+    expected = (
+        frame.loc[frame["volume_2026"] > 0, ["region_of_sales", "volume_2026"]]
+        .groupby("region_of_sales", as_index=False)["volume_2026"]
+        .sum()
+        .sort_values(["volume_2026", "region_of_sales"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    response = client.post(
+        "/query",
+        json={"query": "Show launch volume by RoS in 2026"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "distribution"
+    assert payload["plan"]["group_by"] == ["region_of_sales"]
+    assert [row["region_of_sales"] for row in payload["answer"][:5]] == expected["region_of_sales"].head(5).tolist()
+    assert [int(round(row["value"])) for row in payload["answer"][:5]] == [int(round(value)) for value in expected["volume_2026"].head(5).tolist()]
+
+
+def test_query_compares_tcu_launch_volumes_for_year() -> None:
+    frame = _loaded_frame()
+    stack_text = frame["tcu_details"].fillna("").str.lower()
+    expected_tbm20 = int(
+        round(
+            frame.loc[
+                stack_text.str.contains(r"(?:^|,\s*)tbm\ 2\.0(?:\s*\([^)]*\))?(?:,\s*|$)", regex=True) & (frame["volume_2026"] > 0),
+                "volume_2026",
+            ].sum()
+        )
+    )
+    expected_tbm20h = int(
+        round(
+            frame.loc[
+                stack_text.str.contains(r"(?:^|,\s*)tbm\ 2\.0h(?:\s*\([^)]*\))?(?:,\s*|$)", regex=True) & (frame["volume_2026"] > 0),
+                "volume_2026",
+            ].sum()
+        )
+    )
+
+    response = client.post(
+        "/query",
+        json={"query": "Compare between TBM2.0 and TBM 2.0H Launch volumes in 2026"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["answer_type"] == "distribution"
+    assert payload["plan"]["group_by"] == ["comparison_value"]
+    assert payload["plan"]["metric"] == "volume_2026"
+    pairs = {row["comparison_value"]: int(round(row["value"])) for row in payload["answer"]}
+    assert pairs == {"TBM 2.0": expected_tbm20, "TBM 2.0H": expected_tbm20h}
 
 
 def test_query_returns_mca_launches_in_next_24_months() -> None:
@@ -649,6 +816,52 @@ def test_feedback_persists_learning_record() -> None:
     assert payload["record_id"]
 
 
+def test_feedback_report_summarizes_learning_records() -> None:
+    original_store = main_module.learning_store
+    original_planner = main_module.planner
+    with TemporaryDirectory() as temp_dir:
+        temp_store = LearningStore(
+            jsonl_path=Path(temp_dir) / "learning.jsonl",
+            duckdb_path=Path(temp_dir) / "learning.duckdb",
+        )
+        main_module.learning_store = temp_store
+        main_module.planner = Planner(learning_store=temp_store)
+        try:
+            client.post(
+                "/feedback",
+                json={
+                    "query": "Which vehicles are launching in 26Q4?",
+                    "plan": {"intent": "list", "filters": []},
+                    "answer": [{"car_family": "F2X"}],
+                    "rating": "incorrect",
+                    "correction": "This should have used launch_event output.",
+                },
+            )
+            client.post(
+                "/feedback",
+                json={
+                    "query": "Tell me about Jeep Recon",
+                    "plan": {"intent": "list", "filters": []},
+                    "answer": [{"car_family": "J-RC"}],
+                    "rating": "helpful",
+                    "correction": None,
+                },
+            )
+            report_response = client.get("/feedback/report")
+            report = report_response.json()
+
+            assert report_response.status_code == 200
+            assert report["total_feedback"] == 2
+            assert report["helpful_count"] == 1
+            assert report["incorrect_count"] == 1
+            assert report["needs_more_detail_count"] == 0
+            assert "This should have used launch_event output." in report["top_corrections"]
+            assert len(report["recent_feedback"]) == 2
+        finally:
+            main_module.learning_store = original_store
+            main_module.planner = original_planner
+
+
 def test_export_endpoint_returns_excel_workbook() -> None:
     query_response = client.post(
         "/query",
@@ -679,7 +892,7 @@ def test_hybrid_planner_can_override_weak_intent_signal(monkeypatch) -> None:
     monkeypatch.setattr(
         planner,
         "_interpret_with_provider",
-        lambda query: {
+        lambda query, feedback_context=None: {
             "intent": "count",
             "data_view": "vehicle",
             "confidence": 0.93,
@@ -703,7 +916,7 @@ def test_hybrid_planner_preserves_strong_heuristics_against_bad_override(monkeyp
     monkeypatch.setattr(
         planner,
         "_interpret_with_provider",
-        lambda query: {
+        lambda query, feedback_context=None: {
             "intent": "list",
             "data_view": "vehicle",
             "confidence": 0.99,
@@ -728,7 +941,7 @@ def test_hybrid_planner_can_force_launch_event_window_for_weak_phrasing(monkeypa
     monkeypatch.setattr(
         planner,
         "_interpret_with_provider",
-        lambda query: {
+        lambda query, feedback_context=None: {
             "intent": "list",
             "data_view": "launch_event",
             "confidence": 0.91,
@@ -763,7 +976,7 @@ def test_planner_mode_override_can_force_heuristic(monkeypatch) -> None:
     monkeypatch.setattr(
         planner,
         "_interpret_with_provider",
-        lambda query: {
+        lambda query, feedback_context=None: {
             "intent": "count",
             "data_view": "vehicle",
             "confidence": 0.95,
@@ -777,6 +990,67 @@ def test_planner_mode_override_can_force_heuristic(monkeypatch) -> None:
     assert plan.planner_diagnostics is not None
     assert any("Planner mode requested by UI: heuristic." == note for note in plan.planner_diagnostics.decision_notes)
     assert plan.planner_diagnostics.llm_suggestion is None
+
+
+def test_planner_diagnostics_include_relevant_feedback_context() -> None:
+    with TemporaryDirectory() as temp_dir:
+        store = LearningStore(
+            jsonl_path=Path(temp_dir) / "learning.jsonl",
+            duckdb_path=Path(temp_dir) / "learning.duckdb",
+        )
+        store.store_feedback(
+            query="Which vehicles have SOPM in 26Q4?",
+            plan={"intent": "list", "data_view": "launch_event"},
+            answer=[{"car_family": "F2X"}],
+            rating="incorrect",
+            correction="Use launch-event output with SOPM stage filtering.",
+        )
+        planner = Planner(learning_store=store)
+
+        plan = planner.build_plan("Which vehicles have SOPM in 26Q4?")
+
+        assert plan.planner_diagnostics is not None
+        assert plan.planner_diagnostics.feedback_context
+        assert plan.planner_diagnostics.feedback_context[0].query == "Which vehicles have SOPM in 26Q4?"
+        assert plan.planner_diagnostics.feedback_context[0].rating == "incorrect"
+        assert "Loaded 1 relevant feedback hint(s)" in " ".join(plan.planner_diagnostics.decision_notes)
+
+
+def test_hybrid_planner_passes_feedback_context_to_interpretation(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "hybrid")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "openai")
+    with TemporaryDirectory() as temp_dir:
+        store = LearningStore(
+            jsonl_path=Path(temp_dir) / "learning.jsonl",
+            duckdb_path=Path(temp_dir) / "learning.duckdb",
+        )
+        store.store_feedback(
+            query="Show vehicles planned in 26Q4",
+            plan={"intent": "list", "data_view": "launch_event"},
+            answer=[{"car_family": "F2X"}],
+            rating="incorrect",
+            correction="Treat this as a launch-window query.",
+        )
+        planner = Planner(learning_store=store)
+        captured: dict[str, object] = {}
+
+        def fake_interpret(query, feedback_context=None):
+            captured["query"] = query
+            captured["feedback_context"] = feedback_context
+            return {
+                "intent": "list",
+                "data_view": "launch_event",
+                "confidence": 0.88,
+                "reasoning": "Feedback and phrasing both indicate a launch window.",
+            }
+
+        monkeypatch.setattr(planner, "_interpret_with_provider", fake_interpret)
+        plan = planner.build_plan("Show vehicles planned in 26Q4")
+
+        assert plan.data_view == "launch_event"
+        assert captured["query"] == "Show vehicles planned in 26Q4"
+        assert captured["feedback_context"]
+        assert captured["feedback_context"][0]["correction"] == "Treat this as a launch-window query."
 
 
 def test_planner_mode_override_hybrid_without_provider_falls_back_safely(monkeypatch) -> None:
