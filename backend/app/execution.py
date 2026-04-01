@@ -58,7 +58,7 @@ class ExecutionEngine:
         where_clauses, parameters, filter_notes = self._build_where(plan)
         sql = self._build_sql(plan, where_clauses, table_name)
         execution_parameters = parameters
-        if plan.intent == "distribution" and table_name == "launch_programs" and plan.group_by[:2] == ["region_logic", "region_value"]:
+        if plan.intent == "distribution" and plan.group_by[:2] == ["region_logic", "region_value"]:
             repeat_count = 2 if plan.region_scope in {"ANY", "BOTH"} else 1
             execution_parameters = parameters * repeat_count
         result = connection.execute(sql, execution_parameters).fetchdf()
@@ -144,6 +144,17 @@ class ExecutionEngine:
             return (f"{field} >= CURRENT_DATE", [])
         if field in {"sopm", "launch_date"} and isinstance(value, str) and value.startswith("CURRENT_DATE + INTERVAL"):
             return (f"{field} <= {value}", [])
+        if field == "milestone_window":
+            columns = [column for column in value.get("columns", []) if column]
+            start = value.get("start")
+            end = value.get("end")
+            if not columns or not start or not end:
+                return ("1 = 1", [])
+            clauses = [f"({column} >= ? AND {column} < ?)" for column in columns]
+            parameters: list[Any] = []
+            for _ in columns:
+                parameters.extend([start, end])
+            return ("(" + " OR ".join(clauses) + ")", parameters)
         if field == "launch_year":
             return ("launch_year = ?", [value])
         if field == "sopm_year":
@@ -162,6 +173,9 @@ class ExecutionEngine:
             return (f"{field} {operator} ?", [value])
         if operator == "contains":
             return (f"LOWER({field}) LIKE ?", [f"%{str(value).lower()}%"])
+        if operator == "contains_any":
+            clauses = [f"LOWER({field}) LIKE ?" for _ in value]
+            return ("(" + " OR ".join(clauses) + ")", [f"%{str(item).lower()}%" for item in value])
         if operator == "not_contains":
             return (f"LOWER({field}) NOT LIKE ?", [f"%{str(value).lower()}%"])
         if operator == "in":
@@ -187,8 +201,8 @@ class ExecutionEngine:
             """
 
         if plan.intent == "distribution":
-            if table_name == "launch_programs" and plan.group_by[:2] == ["region_logic", "region_value"]:
-                return self._build_region_distribution_sql(where_sql, plan.region_scope, plan.metric)
+            if plan.group_by[:2] == ["region_logic", "region_value"]:
+                return self._build_region_distribution_sql(where_sql, plan.region_scope, plan.metric, table_name)
             group_sql = ", ".join(plan.group_by)
             aggregate = self._metric_aggregate(plan.metric)
             return f"""
@@ -226,14 +240,14 @@ class ExecutionEngine:
             ORDER BY event_count DESC, launch_month
         """
 
-    def _build_region_distribution_sql(self, where_sql: str, region_scope: str, metric: str) -> str:
+    def _build_region_distribution_sql(self, where_sql: str, region_scope: str, metric: str, table_name: str) -> str:
         aggregate = self._metric_aggregate(metric)
         selects: list[str] = []
         if region_scope in {"ANY", "ROS", "BOTH"}:
             selects.append(
                 f"""
                 SELECT 'RoS' AS region_logic, region_of_sales AS region_value, {aggregate} AS value
-                FROM launch_programs
+                FROM {table_name}
                 WHERE {where_sql}
                 GROUP BY region_of_sales
                 """
@@ -242,7 +256,7 @@ class ExecutionEngine:
             selects.append(
                 f"""
                 SELECT 'IPZ' AS region_logic, initial_prod_zone AS region_value, {aggregate} AS value
-                FROM launch_programs
+                FROM {table_name}
                 WHERE {where_sql}
                 GROUP BY initial_prod_zone
                 """

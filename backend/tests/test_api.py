@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.main import app
 from app.milestone_store import MilestoneStore
+from app.planner import Planner
 
 
 client = TestClient(app)
@@ -57,6 +58,30 @@ def test_query_marks_unsupported_for_ssdp_migration_question() -> None:
     assert payload["plan"]["unsupported_reasons"]
 
 
+def test_query_marks_unsupported_for_low_signal_nonsense_input() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Blah"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "unsupported"
+    assert payload["plan"]["unsupported_reasons"]
+
+
+def test_query_marks_unsupported_for_ungrounded_launch_word_only() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "launches"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "unsupported"
+    assert payload["plan"]["unsupported_reasons"]
+
+
 def test_query_returns_active_vehicles_for_year() -> None:
     response = client.post(
         "/query",
@@ -79,6 +104,7 @@ def test_general_launch_query_uses_business_columns_without_default_volume() -> 
 
     assert response.status_code == 200
     assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
     first_row = payload["answer"][0]
     assert "car_family" in first_row
     assert "brand" in first_row
@@ -86,6 +112,10 @@ def test_general_launch_query_uses_business_columns_without_default_volume() -> 
     assert "tcu_details" in first_row
     assert "infotainment_details" in first_row
     assert "ota" in first_row
+    assert "launch_stage" in first_row
+    assert "launch_date" in first_row
+    assert "milestone_im" in first_row
+    assert "milestone_anchor_label" in first_row
     assert "launch_volume" not in first_row
 
 
@@ -99,9 +129,30 @@ def test_query_applies_brand_region_and_year_filters_together() -> None:
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert payload["answer_type"] == "list"
-    assert len(payload["answer"]) == 2
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert len(payload["answer"]) == 4
     assert {row["brand"] for row in payload["answer"]} == {"JEEP"}
-    assert {row["car_family"] for row in payload["answer"]} == {"J5O", "J-WL"}
+    assert {row["car_family"] for row in payload["answer"]} == {"J516", "J5O", "J-WL"}
+
+
+def test_query_can_match_multiple_regions_with_or_semantics() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which Jeep vehicles are launching in IAP and MEA regions in 2026?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(
+        item["field"] == "region_of_sales" and item["operator"] == "contains_any" and item["value"] == ["IAP", "MEA"]
+        for item in payload["plan"]["filters"]
+    )
+    assert any(item["field"] == "brand" and item["value"] == "JEEP" for item in payload["plan"]["filters"])
+    assert payload["answer"]
+    assert {row["region_of_sales"] for row in payload["answer"]}.issubset({"IAP", "MEA"})
+    assert {row["car_family"] for row in payload["answer"]} == {"J550", "J5O", "J516", "J-WL"}
 
 
 def test_query_with_unavailable_brand_returns_no_rows_instead_of_broad_match() -> None:
@@ -142,8 +193,10 @@ def test_query_applies_eea_filter_without_accidental_extra_region_filter() -> No
 
     assert response.status_code == 200
     assert payload["status"] == "ok"
-    assert len(payload["answer"]) == 5
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert len(payload["answer"]) == 11
     assert {row["eea"] for row in payload["answer"]} == {"Atlantis High"}
+    assert {row["car_family"] for row in payload["answer"]} == {"M189", "J5O", "LD Pickup (DTe)", "M182", "J-WL"}
 
 
 def test_query_with_tbd_ota_does_not_accidentally_add_tbd_region_filter() -> None:
@@ -159,8 +212,9 @@ def test_query_with_tbd_ota_does_not_accidentally_add_tbd_region_filter() -> Non
         not (item["field"] == "region_of_sales" and item["value"] == "TBD")
         for item in payload["plan"]["filters"]
     )
-    assert len(payload["answer"]) == 2
-    assert {row["car_family"] for row in payload["answer"]} == {"OV52", "P54"}
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert len(payload["answer"]) == 5
+    assert {row["car_family"] for row in payload["answer"]} == {"OV51", "OV52", "P54"}
 
 
 def test_active_year_filter_is_preserved_when_query_also_mentions_volume_trends() -> None:
@@ -198,7 +252,8 @@ def test_query_can_match_tcu_generation_from_uploaded_lrp_values() -> None:
     assert response.status_code == 200
     assert payload["status"] == "ok"
     assert any(item["field"] == "tcu_details" and item["value"] == "TBM 2.0H" for item in payload["plan"]["filters"])
-    assert {row["car_family"] for row in payload["answer"]} == {"M189", "J5O", "LD Pickup (DTe)", "J-WL"}
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert {row["car_family"] for row in payload["answer"]} == {"M189", "J5O", "LD Pickup (DTe)", "M182", "J-WL"}
 
 
 def test_natural_query_matches_car_family_entity() -> None:
@@ -373,6 +428,140 @@ def test_query_returns_overlap_months_for_launch_events() -> None:
     assert "event_count" in payload["answer"][0]
 
 
+def test_query_parses_quarter_launch_window_deterministically() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles are launching in 26Q4?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(item["field"] == "launch_date" and item["operator"] == ">=" and item["value"] == "2026-10-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == "<" and item["value"] == "2027-01-01" for item in payload["plan"]["filters"])
+    assert all(row["launch_date"].startswith(("2026-10", "2026-11", "2026-12")) for row in payload["answer"])
+
+
+def test_query_with_explicit_sopm_in_quarter_uses_launch_window_view() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles have SOPM in 26Q4?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(item["field"] == "launch_stage" and item["value"] == "SOPM" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == ">=" and item["value"] == "2026-10-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == "<" and item["value"] == "2027-01-01" for item in payload["plan"]["filters"])
+    assert all(row["launch_stage"] == "SOPM" for row in payload["answer"])
+
+
+def test_query_filters_sop_6_by_requested_quarter() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles has SOP -6 in 26Q3?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "vehicle"
+    assert payload["plan"]["milestone_columns"] == ["milestone_sop_6"]
+    assert any(item["field"] == "milestone_window" for item in payload["plan"]["filters"])
+    assert payload["answer"] == []
+
+
+def test_query_filters_shrm_by_requested_quarter() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles has SHRM in 26Q3?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["milestone_columns"] == ["milestone_shrm"]
+    assert any(item["field"] == "milestone_window" for item in payload["plan"]["filters"])
+    assert payload["answer"] == []
+
+
+def test_query_filters_x0_by_requested_quarter() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles has X0 in 26Q2?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["milestone_columns"] == ["milestone_x0"]
+    assert any(item["field"] == "milestone_window" for item in payload["plan"]["filters"])
+    assert payload["answer"] == []
+
+
+def test_query_can_return_positive_milestone_window_matches() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles has X0 in 25Q4?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["milestone_columns"] == ["milestone_x0"]
+    assert any(item["field"] == "milestone_window" for item in payload["plan"]["filters"])
+    assert payload["answer"]
+    assert all(row["milestone_x0"].startswith(("2025-10", "2025-11", "2025-12")) for row in payload["answer"])
+
+
+def test_query_parses_half_year_launch_window_deterministically() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles are launching in 27H2?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(item["field"] == "launch_date" and item["operator"] == ">=" and item["value"] == "2027-07-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == "<" and item["value"] == "2028-01-01" for item in payload["plan"]["filters"])
+    assert payload["answer"] == []
+
+
+def test_query_parses_month_launch_window_deterministically() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles are launching in April 2028?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(item["field"] == "launch_date" and item["operator"] == ">=" and item["value"] == "2028-04-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == "<" and item["value"] == "2028-05-01" for item in payload["plan"]["filters"])
+    assert payload["answer"] == []
+
+
+def test_query_parses_cy_launch_window_deterministically() -> None:
+    response = client.post(
+        "/query",
+        json={"query": "Which vehicles are launching in CY2026?"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["plan"]["data_view"] == "launch_event"
+    assert any(item["field"] == "launch_date" and item["operator"] == ">=" and item["value"] == "2026-01-01" for item in payload["plan"]["filters"])
+    assert any(item["field"] == "launch_date" and item["operator"] == "<" and item["value"] == "2027-01-01" for item in payload["plan"]["filters"])
+    assert payload["answer"]
+
+
 def test_query_derives_milestones_from_sopm_with_nearest_monday_rounding() -> None:
     response = client.post(
         "/query",
@@ -458,6 +647,150 @@ def test_feedback_persists_learning_record() -> None:
     assert response.status_code == 200
     assert payload["stored"] is True
     assert payload["record_id"]
+
+
+def test_export_endpoint_returns_excel_workbook() -> None:
+    query_response = client.post(
+        "/query",
+        json={"query": "Which vehicles are launching in 26Q4?"},
+    )
+    query_payload = query_response.json()
+
+    export_response = client.post(
+        "/export",
+        json={
+            "query": query_payload["query"],
+            "plan": query_payload["plan"],
+            "answer_type": query_payload["answer_type"],
+            "answer": query_payload["answer"],
+        },
+    )
+
+    assert query_response.status_code == 200
+    assert export_response.status_code == 200
+    assert export_response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert export_response.content[:2] == b"PK"
+
+
+def test_hybrid_planner_can_override_weak_intent_signal(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "hybrid")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "openai")
+    planner = Planner()
+    monkeypatch.setattr(
+        planner,
+        "_interpret_with_provider",
+        lambda query: {
+            "intent": "count",
+            "data_view": "vehicle",
+            "confidence": 0.93,
+            "reasoning": "User asks for a metric-style total rather than a row list.",
+        },
+    )
+
+    plan = planner.build_plan("Vehicles in 2026")
+
+    assert plan.intent == "count"
+    assert "Hybrid assist" in plan.reasoning_summary
+    assert plan.planner_diagnostics is not None
+    assert plan.planner_diagnostics.llm_suggestion is not None
+    assert "intent" in plan.planner_diagnostics.llm_suggestion.accepted_overrides
+
+
+def test_hybrid_planner_preserves_strong_heuristics_against_bad_override(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "hybrid")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "openai")
+    planner = Planner()
+    monkeypatch.setattr(
+        planner,
+        "_interpret_with_provider",
+        lambda query: {
+            "intent": "list",
+            "data_view": "vehicle",
+            "confidence": 0.99,
+            "reasoning": "Incorrect override for regression protection.",
+        },
+    )
+
+    plan = planner.build_plan("How many vehicles have MCA in 2026?")
+
+    assert plan.intent == "count"
+    assert plan.data_view == "launch_event"
+    assert "Hybrid assist" not in plan.reasoning_summary
+    assert plan.planner_diagnostics is not None
+    assert plan.planner_diagnostics.llm_suggestion is not None
+    assert plan.planner_diagnostics.llm_suggestion.accepted_overrides == []
+
+
+def test_hybrid_planner_can_force_launch_event_window_for_weak_phrasing(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "hybrid")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "openai")
+    planner = Planner()
+    monkeypatch.setattr(
+        planner,
+        "_interpret_with_provider",
+        lambda query: {
+            "intent": "list",
+            "data_view": "launch_event",
+            "confidence": 0.91,
+            "reasoning": "This is a launch-window query even though it does not say launching explicitly.",
+        },
+    )
+
+    plan = planner.build_plan("Show vehicles planned in 26Q4")
+
+    assert plan.data_view == "launch_event"
+    assert any(item.field == "launch_date" and item.operator == ">=" and item.value == "2026-10-01" for item in plan.filters)
+    assert any(item.field == "launch_date" and item.operator == "<" and item.value == "2027-01-01" for item in plan.filters)
+    assert "Hybrid assist" in plan.reasoning_summary
+    assert plan.planner_diagnostics is not None
+    assert plan.planner_diagnostics.query_frame == "launch_window"
+
+
+def test_planner_attaches_diagnostics_for_heuristic_path() -> None:
+    plan = Planner().build_plan("Which vehicles are launching in 2026?")
+
+    assert plan.planner_diagnostics is not None
+    assert plan.planner_diagnostics.query_frame == "launch_window"
+    assert plan.planner_diagnostics.grounding_status == "grounded"
+    assert plan.planner_diagnostics.heuristic_baseline.data_view == "launch_event"
+    assert plan.planner_diagnostics.final_resolved_plan.data_view == "launch_event"
+
+
+def test_planner_mode_override_can_force_heuristic(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "hybrid")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "openai")
+    planner = Planner()
+    monkeypatch.setattr(
+        planner,
+        "_interpret_with_provider",
+        lambda query: {
+            "intent": "count",
+            "data_view": "vehicle",
+            "confidence": 0.95,
+            "reasoning": "Would normally override if hybrid were active.",
+        },
+    )
+
+    plan = planner.build_plan("Vehicles in 2026", mode_override="heuristic")
+
+    assert plan.intent == "list"
+    assert plan.planner_diagnostics is not None
+    assert any("Planner mode requested by UI: heuristic." == note for note in plan.planner_diagnostics.decision_notes)
+    assert plan.planner_diagnostics.llm_suggestion is None
+
+
+def test_planner_mode_override_hybrid_without_provider_falls_back_safely(monkeypatch) -> None:
+    monkeypatch.setenv("LAUNCHIQ_PLANNER_MODE", "heuristic")
+    monkeypatch.setenv("LAUNCHIQ_LLM_PROVIDER", "heuristic")
+    planner = Planner()
+
+    plan = planner.build_plan("Which vehicles are launching in 2026?", mode_override="hybrid")
+
+    assert plan.intent == "list"
+    assert plan.data_view == "launch_event"
+    assert plan.planner_diagnostics is not None
+    assert any("Planner mode requested by UI: hybrid." == note for note in plan.planner_diagnostics.decision_notes)
+    assert any("no llm provider was available" in note.lower() for note in plan.planner_diagnostics.decision_notes)
 
 
 def test_milestone_deliverables_seed_from_database() -> None:

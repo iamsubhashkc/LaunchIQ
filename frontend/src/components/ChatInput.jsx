@@ -1,4 +1,4 @@
-export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loading }) {
+export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loading, plannerMode, onPlannerModeChange }) {
   function handleSubmit(event) {
     event.preventDefault();
     onSubmit(query);
@@ -14,6 +14,28 @@ export function ChatInput({ query, onQueryChange, onSubmit, sampleQueries, loadi
       </div>
 
       <form onSubmit={handleSubmit} className="query-form">
+        <div className="planner-mode-control">
+          <div>
+            <span className="label">Planner Mode</span>
+            <p>{plannerMode === "hybrid" ? "Hybrid uses backend-configured LLM assistance when available." : "Heuristic uses deterministic planner rules only."}</p>
+          </div>
+          <div className="planner-mode-switch" role="tablist" aria-label="Planner mode">
+            <button
+              type="button"
+              className={plannerMode === "heuristic" ? "view-switch-button active" : "view-switch-button"}
+              onClick={() => onPlannerModeChange("heuristic")}
+            >
+              Heuristic
+            </button>
+            <button
+              type="button"
+              className={plannerMode === "hybrid" ? "view-switch-button active" : "view-switch-button"}
+              onClick={() => onPlannerModeChange("hybrid")}
+            >
+              Hybrid
+            </button>
+          </div>
+        </div>
         <textarea
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}

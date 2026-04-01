@@ -133,6 +133,13 @@ function joinSentence(parts) {
   return parts.filter(Boolean).join(" ");
 }
 
+function formatLaunchStageLabel(value) {
+  if (value === "MCA") {
+    return "MCA1";
+  }
+  return value || "Launch";
+}
+
 function resolveRelevantLaunch(rows) {
   const now = new Date();
   const candidates = rows
@@ -230,6 +237,209 @@ function buildLaunchBriefRows(rows) {
   return [...groups.values()];
 }
 
+function buildGroupedLaunchWindowRows(rows) {
+  const groups = new Map();
+
+  rows.forEach((row) => {
+    const eventDate = row.launch_date || row.sopm || "";
+    const eventLabel = row.launch_stage || "SOPM";
+    const key = [
+      row.car_family || "",
+      row.brand || "",
+      row.commercial_name || "",
+      eventLabel,
+      eventDate,
+      row.initial_prod_zone || "",
+      row.eea || "",
+      row.tcu_details || "",
+      row.infotainment_details || "",
+      row.ota || "",
+      row.platform || "",
+      row.program || "",
+    ].join("|");
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        head: row,
+        rows: [],
+      });
+    }
+    groups.get(key).rows.push(row);
+  });
+
+  return [...groups.values()]
+    .sort((left, right) => {
+      const leftDate = parseIsoDate(left.head.launch_date || left.head.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const rightDate = parseIsoDate(right.head.launch_date || right.head.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      if (leftDate !== rightDate) {
+        return leftDate - rightDate;
+      }
+      return String(left.head.commercial_name || left.head.car_family || "").localeCompare(
+        String(right.head.commercial_name || right.head.car_family || "")
+      );
+    })
+    .map((group) => ({
+      ...group,
+      salesRegions: extractUniqueValues(group.rows, "region_of_sales"),
+    }));
+}
+
+function renderLaunchWindowCardGrid(answer) {
+  const groups = buildGroupedLaunchWindowRows(answer);
+  return (
+    <div className="card-grid">
+      {groups.map((group, index) => {
+        const head = group.head;
+        const currentMilestone = buildLaunchWindowCurrentMilestone(head);
+        const eventDate = head.launch_date || head.sopm;
+        const eventLabel = head.launch_stage || "SOPM";
+        return (
+          <article className="launch-card launch-window-card" key={`${head.car_family ?? "launch"}-${eventDate ?? index}-${eventLabel}`}>
+            <div className="launch-card-top launch-window-top">
+              <div className="launch-window-identity">
+                <strong className="launch-window-family">{head.car_family || "Unknown"}</strong>
+                <p className="launch-window-name">{[head.brand, head.commercial_name].filter(Boolean).join(" ") || "Commercial name not provided"}</p>
+                <p className="launch-window-ipz">{head.initial_prod_zone || "IPZ not provided"}</p>
+              </div>
+              <div className="launch-window-date">
+                <span>{formatLaunchStageLabel(eventLabel)}</span>
+                <strong>{formatValue(eventDate)}</strong>
+              </div>
+            </div>
+            <dl className="card-facts launch-window-facts">
+              <div>
+                <dt>RoS</dt>
+                <dd>{formatList(group.salesRegions) || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>EEA</dt>
+                <dd>{head.eea || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>TCU</dt>
+                <dd>{head.tcu_details || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Infotainment</dt>
+                <dd>{head.infotainment_details || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>OTA</dt>
+                <dd>{head.ota || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Platform</dt>
+                <dd>{head.platform || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Current Milestone</dt>
+                <dd>{currentMilestone ? `${currentMilestone.label} (${formatValue(currentMilestone.date)})` : "Not provided"}</dd>
+              </div>
+            </dl>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function canRenderSharedVehicleCards(rows) {
+  return Array.isArray(rows) &&
+    rows.length > 0 &&
+    rows.every((row) => row && typeof row === "object") &&
+    rows.some((row) => row.car_family || row.commercial_name || row.brand);
+}
+
+function buildComponentMatchCardGroups(rows) {
+  return groupRowsByEntity(rows)
+    .map((groupRows) => {
+      const sortedRows = [...groupRows].sort((left, right) => {
+        const leftDate = parseIsoDate(left.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        const rightDate = parseIsoDate(right.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        if (leftDate !== rightDate) {
+          return leftDate - rightDate;
+        }
+        return String(left.commercial_name || left.car_family || "").localeCompare(
+          String(right.commercial_name || right.car_family || "")
+        );
+      });
+
+      return {
+        head: sortedRows[0],
+        rows: sortedRows,
+        salesRegions: extractUniqueValues(sortedRows, "region_of_sales"),
+      };
+    })
+    .sort((left, right) => {
+      const leftDate = parseIsoDate(left.head?.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const rightDate = parseIsoDate(right.head?.sopm)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      if (leftDate !== rightDate) {
+        return leftDate - rightDate;
+      }
+      return String(left.head?.commercial_name || left.head?.car_family || "").localeCompare(
+        String(right.head?.commercial_name || right.head?.car_family || "")
+      );
+    });
+}
+
+function renderComponentMatchCardGrid(answer) {
+  const groups = buildComponentMatchCardGroups(answer);
+
+  return (
+    <div className="card-grid">
+      {groups.map((group, index) => {
+        const head = group.head;
+        const currentMilestone = buildLaunchWindowCurrentMilestone(head);
+        return (
+          <article className="launch-card launch-window-card" key={`${head.car_family ?? "component"}-${head.sopm ?? index}`}>
+            <div className="launch-card-top launch-window-top">
+              <div className="launch-window-identity">
+                <strong className="launch-window-family">{head.car_family || "Unknown"}</strong>
+                <p className="launch-window-name">{[head.brand, head.commercial_name].filter(Boolean).join(" ") || "Commercial name not provided"}</p>
+                <p className="launch-window-ipz">{head.initial_prod_zone || "IPZ not provided"}</p>
+              </div>
+              <div className="launch-window-date">
+                <span>SOPM</span>
+                <strong>{formatValue(head.sopm)}</strong>
+              </div>
+            </div>
+            <dl className="card-facts launch-window-facts">
+              <div>
+                <dt>RoS</dt>
+                <dd>{formatList(group.salesRegions) || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>EEA</dt>
+                <dd>{head.eea || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>TCU</dt>
+                <dd>{head.tcu_details || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Infotainment</dt>
+                <dd>{head.infotainment_details || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>OTA</dt>
+                <dd>{head.ota || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Platform</dt>
+                <dd>{head.platform || "Not provided"}</dd>
+              </div>
+              <div>
+                <dt>Current Milestone</dt>
+                <dd>{currentMilestone ? `${currentMilestone.label} (${formatValue(currentMilestone.date)})` : "Not provided"}</dd>
+              </div>
+            </dl>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function determineCurrentMilestone(row) {
   const now = new Date();
   const milestones = BRIEF_MILESTONE_SEQUENCE.map((item) => ({
@@ -247,6 +457,17 @@ function determineCurrentMilestone(row) {
     return completed.sort((left, right) => right.date - left.date)[0];
   }
   return milestones.sort((left, right) => left.date - right.date)[0];
+}
+
+function buildLaunchWindowCurrentMilestone(row) {
+  const current = determineCurrentMilestone(row);
+  if (!current) {
+    return null;
+  }
+  return {
+    label: current.label,
+    date: row[current.field],
+  };
 }
 
 function buildCurrentAndUpcomingMilestones(row, deliverables) {
@@ -708,6 +929,30 @@ function renderLaunchTimeline(answer, response) {
   );
 }
 
+function renderLaunchWindow(answer, response) {
+  if (!Array.isArray(answer) || answer.length === 0) {
+    return (
+      <div className="hero-insight negative-insight">
+        <span className="insight-kicker">Launch Window</span>
+        <strong>No launch events matched.</strong>
+        <p>{response.query}</p>
+      </div>
+    );
+  }
+
+  const groups = buildGroupedLaunchWindowRows(answer);
+  return (
+    <div className="insight-stack">
+      <div className="hero-insight">
+        <span className="insight-kicker">Launch Window</span>
+        <strong>{groups.length} grouped launch events</strong>
+        <p>{response.query}</p>
+      </div>
+      {renderLaunchWindowCardGrid(answer)}
+    </div>
+  );
+}
+
 function renderLaunchBrief(answer, response) {
   if (!Array.isArray(answer) || answer.length === 0) {
     return <p className="empty-state">No launch rows matched the requested vehicle or region.</p>;
@@ -1055,7 +1300,7 @@ function renderRegionalFootprint(answer, response) {
           </article>
         ))}
       </div>
-      {renderLaunchCards(answer, { compact: true })}
+      {renderLaunchWindowCardGrid(answer)}
     </div>
   );
 }
@@ -1066,14 +1311,15 @@ function renderComponentMatch(answer, response, options = {}) {
   }
 
   const components = extractMatchedComponents(response?.plan?.filters);
-  const groups = groupRowsByEntity(answer);
+  const vehicleRows = canRenderSharedVehicleCards(answer);
+  const matchedVehicles = groupRowsByEntity(answer).length;
 
   return (
     <div className="insight-stack">
       {options.compact ? null : (
         <div className="hero-insight">
           <span className="insight-kicker">Component Match</span>
-          <strong>{groups.length} matched vehicle profiles</strong>
+          <strong>{matchedVehicles} matched vehicle profiles</strong>
           <p>{response.query}</p>
           <div className="chip-row">
             {components.map((item) => (
@@ -1084,38 +1330,11 @@ function renderComponentMatch(answer, response, options = {}) {
           </div>
         </div>
       )}
-      <div className="card-grid">
-        {groups.map((rows) => {
-          const head = rows[0];
-          return (
-            <article className="launch-card component-card" key={`${head.car_family}-${head.commercial_name}`}>
-              <div className="launch-card-top">
-                <strong>{head.commercial_name || head.car_family}</strong>
-                <span>{rows.length} rows</span>
-              </div>
-              <p>{[head.brand, head.car_family, head.platform].filter(Boolean).join(" / ")}</p>
-              <div className="chip-row">
-                {head.region_of_sales ? <span className="data-chip">{head.region_of_sales}</span> : null}
-                {head.ota ? <span className="data-chip">{head.ota}</span> : null}
-              </div>
-              <dl className="card-facts">
-                {head.tcu_details ? (
-                  <>
-                    <dt>TCU Match</dt>
-                    <dd>{head.tcu_details}</dd>
-                  </>
-                ) : null}
-                {head.infotainment_details ? (
-                  <>
-                    <dt>Infotainment Match</dt>
-                    <dd>{head.infotainment_details}</dd>
-                  </>
-                ) : null}
-              </dl>
-            </article>
-          );
-        })}
-      </div>
+      {vehicleRows
+        ? options.compact
+          ? renderComponentMatchCardGrid(answer.slice(0, 6))
+          : renderComponentMatchCardGrid(answer)
+        : renderTable(answer)}
     </div>
   );
 }
@@ -1182,6 +1401,9 @@ function inferViewMode(response) {
   if (queryStartsWith(query, ["when "]) && query.includes("launch")) {
     return { id: "launch_brief", label: "Launch Brief", description: "Summarizes launch timing by vehicle, stage, and region." };
   }
+  if (response?.plan?.data_view === "launch_event" && response?.answer_type === "list") {
+    return { id: "launch_window", label: "Launch Window", description: "Groups launch events while merging RoS-only splits with identical timing and configuration." };
+  }
   if (isVehicleIntent && answer.length > 0 && answer.length <= 24) {
     return { id: "vehicle_profile", label: "Vehicle Brief", description: "Summarizes the selected vehicle with lifecycle and readiness context." };
   }
@@ -1227,6 +1449,8 @@ function renderViewMode(mode, response) {
       return renderLaunchTimeline(answer, response);
     case "launch_brief":
       return renderLaunchBrief(answer, response);
+    case "launch_window":
+      return renderLaunchWindow(answer, response);
     case "vehicle_profile":
       return renderEntitySpotlight(answer, response);
     case "component_match":
@@ -1241,9 +1465,30 @@ function renderViewMode(mode, response) {
   }
 }
 
-export function AnswerCard({ response, loading }) {
+function resolvePlannerStatus(response) {
+  const diagnostics = response?.plan?.planner_diagnostics;
+  const notes = diagnostics?.decision_notes ?? [];
+  const llmSuggestion = diagnostics?.llm_suggestion;
+
+  if (notes.some((note) => note.toLowerCase().includes("planner mode requested by ui: hybrid")) && notes.some((note) => note.toLowerCase().includes("no llm provider was available"))) {
+    return { label: "Hybrid Fallback", tone: "fallback" };
+  }
+  if (llmSuggestion && llmSuggestion.accepted_overrides?.length) {
+    return { label: "Hybrid", tone: "hybrid" };
+  }
+  if (notes.some((note) => note.toLowerCase().includes("planner mode requested by ui: hybrid"))) {
+    return { label: "Hybrid", tone: "hybrid" };
+  }
+  if (notes.some((note) => note.toLowerCase().includes("used full llm planner output"))) {
+    return { label: "LLM", tone: "hybrid" };
+  }
+  return { label: "Heuristic", tone: "heuristic" };
+}
+
+export function AnswerCard({ response, loading, onExport, exporting = false }) {
   let body = <p className="empty-state">Results will appear here once a question is submitted.</p>;
   let mode = null;
+  const plannerStatus = resolvePlannerStatus(response);
 
   if (loading) {
     body = <p className="empty-state">Preparing the response...</p>;
@@ -1277,7 +1522,17 @@ export function AnswerCard({ response, loading }) {
           <h2>Answer Workspace</h2>
           <p>{response?.query || "Portfolio answers, milestone briefs, and launch views appear here."}</p>
         </div>
-        <span className="badge">{mode?.label || response?.answer_type || "idle"}</span>
+        <div className="panel-header-actions">
+          {response?.query ? (
+            <span className={`planner-status-badge planner-status-${plannerStatus.tone}`}>{plannerStatus.label}</span>
+          ) : null}
+          {response?.status === "ok" && Array.isArray(response?.answer) && response.answer.length > 0 ? (
+            <button type="button" className="ghost-button export-button" onClick={onExport} disabled={exporting}>
+              {exporting ? "Exporting..." : "Export Excel"}
+            </button>
+          ) : null}
+          <span className="badge">{mode?.label || response?.answer_type || "idle"}</span>
+        </div>
       </div>
       {body}
     </section>

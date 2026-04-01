@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 
 AggregationType = Literal["list", "count", "distribution", "timeline"]
-FilterOperator = Literal["=", "!=", "in", "not_in", "contains", "not_contains", "<=", ">=", "<", ">"]
+FilterOperator = Literal["=", "!=", "in", "not_in", "contains", "contains_any", "not_contains", "<=", ">=", "<", ">"]
+PlannerMode = Literal["heuristic", "hybrid", "llm"]
 
 
 class PlanFilter(BaseModel):
@@ -22,6 +23,37 @@ class ClarificationPrompt(BaseModel):
     field: str
     options: list[str] = Field(default_factory=list)
     reason: str
+
+
+class LlmSuggestion(BaseModel):
+    intent: AggregationType | None = None
+    data_view: Literal["vehicle", "launch_event"] | None = None
+    confidence: float = 0.0
+    reasoning: str = ""
+    accepted_overrides: list[str] = Field(default_factory=list)
+
+
+class PlanSnapshot(BaseModel):
+    intent: AggregationType
+    data_view: Literal["vehicle", "launch_event"]
+    group_by: list[str] = Field(default_factory=list)
+    filters: list[PlanFilter] = Field(default_factory=list)
+    requested_columns: list[str] = Field(default_factory=list)
+    region_scope: Literal["ANY", "ROS", "IPZ", "BOTH"] = "ANY"
+    milestone_anchor: Literal["sopm", "mca_sopm", "mca2_sopm"] | None = None
+    milestone_columns: list[str] = Field(default_factory=list)
+    unsupported_reasons: list[str] = Field(default_factory=list)
+    reasoning_summary: str = ""
+
+
+class PlannerDiagnostics(BaseModel):
+    query_frame: str = "unknown"
+    grounding_status: Literal["grounded", "salvageable", "ungrounded"] = "ungrounded"
+    resolution_state: Literal["resolved", "clarification_needed", "unsupported"] = "resolved"
+    heuristic_baseline: PlanSnapshot
+    llm_suggestion: LlmSuggestion | None = None
+    final_resolved_plan: PlanSnapshot
+    decision_notes: list[str] = Field(default_factory=list)
 
 
 class QueryPlan(BaseModel):
@@ -43,16 +75,19 @@ class QueryPlan(BaseModel):
     clarification_questions: list[ClarificationPrompt] = Field(default_factory=list)
     unsupported_reasons: list[str] = Field(default_factory=list)
     reasoning_summary: str = ""
+    planner_diagnostics: PlannerDiagnostics | None = None
 
 
 class QueryRequest(BaseModel):
     query: str
+    planner_mode: PlannerMode | None = None
     context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClarifyRequest(BaseModel):
     original_query: str
     answers: dict[str, str] = Field(default_factory=dict)
+    planner_mode: PlannerMode | None = None
     context: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -62,6 +97,13 @@ class FeedbackRequest(BaseModel):
     answer: Any
     rating: Literal["helpful", "incorrect", "needs_more_detail"]
     correction: str | None = None
+
+
+class ExportRequest(BaseModel):
+    query: str
+    plan: dict[str, Any] = Field(default_factory=dict)
+    answer_type: AggregationType | None = None
+    answer: Any = None
 
 
 class ExecutionExplanation(BaseModel):

@@ -1,4 +1,26 @@
+function renderPlanSnapshot(title, snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  return (
+    <div className="explanation-card">
+      <span className="label">{title}</span>
+      <ul className="detail-list">
+        <li>Intent: {snapshot.intent}</li>
+        <li>Data view: {snapshot.data_view}</li>
+        <li>Group by: {snapshot.group_by.length ? snapshot.group_by.join(", ") : "none"}</li>
+        <li>Region scope: {snapshot.region_scope}</li>
+        <li>Milestones: {snapshot.milestone_columns.length ? snapshot.milestone_columns.join(", ") : "none"}</li>
+        <li>Requested columns: {snapshot.requested_columns.length ? snapshot.requested_columns.join(", ") : "default set"}</li>
+      </ul>
+    </div>
+  );
+}
+
 export function ExplanationPanel({ plan, explanation, summary }) {
+  const diagnostics = plan?.planner_diagnostics;
+
   return (
     <section className="panel explanation-panel">
       <div className="panel-header">
@@ -15,16 +37,47 @@ export function ExplanationPanel({ plan, explanation, summary }) {
         </div>
 
         <div className="explanation-card">
-          <span className="label">Planner Output</span>
-          {plan ? (
+          <span className="label">Planner Diagnostics</span>
+          {diagnostics ? (
             <ul className="detail-list">
-              <li>Intent: {plan.intent}</li>
-              <li>Group by: {plan.group_by.length ? plan.group_by.join(", ") : "none"}</li>
-              <li>Region scope: {plan.region_scope}</li>
-              <li>Requested columns: {plan.requested_columns.length ? plan.requested_columns.join(", ") : "default set"}</li>
+              <li>Query frame: {diagnostics.query_frame}</li>
+              <li>Grounding status: {diagnostics.grounding_status}</li>
+              <li>Resolution state: {diagnostics.resolution_state}</li>
             </ul>
           ) : (
-            <p>No planner output yet.</p>
+            <p>No diagnostics yet.</p>
+          )}
+        </div>
+
+        {renderPlanSnapshot("Heuristic Baseline", diagnostics?.heuristic_baseline)}
+
+        <div className="explanation-card">
+          <span className="label">LLM Suggestion</span>
+          {diagnostics?.llm_suggestion ? (
+            <ul className="detail-list">
+              <li>Intent: {diagnostics.llm_suggestion.intent || "none"}</li>
+              <li>Data view: {diagnostics.llm_suggestion.data_view || "none"}</li>
+              <li>Confidence: {Number(diagnostics.llm_suggestion.confidence || 0).toFixed(2)}</li>
+              <li>Accepted overrides: {diagnostics.llm_suggestion.accepted_overrides.length ? diagnostics.llm_suggestion.accepted_overrides.join(", ") : "none"}</li>
+              <li>Reasoning: {diagnostics.llm_suggestion.reasoning || "No LLM suggestion was used."}</li>
+            </ul>
+          ) : (
+            <p>No LLM suggestion was used for this plan.</p>
+          )}
+        </div>
+
+        {renderPlanSnapshot("Final Resolved Plan", diagnostics?.final_resolved_plan || plan)}
+
+        <div className="explanation-card">
+          <span className="label">Decision Notes</span>
+          {diagnostics?.decision_notes?.length ? (
+            <ul className="detail-list">
+              {diagnostics.decision_notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>No decision notes recorded.</p>
           )}
         </div>
 

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
+import re
+
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
 
 from .clarification import merge_clarification_answers
 from .execution import ExecutionEngine
@@ -10,6 +15,7 @@ from .learning import LearningStore
 from .milestone_store import MilestoneStore
 from .models import (
     ClarifyRequest,
+    ExportRequest,
     FeedbackRequest,
     FeedbackResponse,
     MilestoneDeliverable,
@@ -43,7 +49,7 @@ def healthcheck() -> dict[str, str]:
 
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest) -> QueryResponse:
-    plan = planner.build_plan(request.query)
+    plan = planner.build_plan(request.query, mode_override=request.planner_mode)
     if plan.unsupported_reasons:
         return QueryResponse(status="unsupported", query=request.query, plan=plan)
     if plan.clarification_questions:
@@ -67,7 +73,7 @@ def query(request: QueryRequest) -> QueryResponse:
 @app.post("/clarify", response_model=QueryResponse)
 def clarify(request: ClarifyRequest) -> QueryResponse:
     augmented_query = merge_clarification_answers(request.original_query, request.answers)
-    plan = planner.build_plan(augmented_query)
+    plan = planner.build_plan(augmented_query, mode_override=request.planner_mode)
     if plan.unsupported_reasons:
         return QueryResponse(status="unsupported", query=request.original_query, plan=plan)
 
@@ -107,6 +113,32 @@ def feedback(request: FeedbackRequest) -> FeedbackResponse:
         correction=request.correction,
     )
     return FeedbackResponse(stored=True, record_id=stored["record_id"], stored_at=stored["stored_at"])
+
+
+@app.post("/export")
+def export_results(request: ExportRequest) -> StreamingResponse:
+    answer = request.answer
+    if isinstance(answer, list):
+        frame = pd.DataFrame(answer)
+    elif isinstance(answer, dict):
+        frame = pd.DataFrame([answer])
+    else:
+        frame = pd.DataFrame([{"value": answer}])
+
+    sheet_name = "LaunchIQ"
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    output.seek(0)
+    filename_stub = re.sub(r"[^a-z0-9]+", "_", request.query.lower()).strip("_")[:48] or "launchiq_export"
+    filename = f"{filename_stub}.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @app.get("/milestones/deliverables", response_model=MilestoneDeliverableListResponse)
