@@ -591,48 +591,122 @@ function buildCurrentAndUpcomingMilestones(row, deliverables) {
 }
 
 function renderVehicleImage(head) {
-  return <VehicleImage brand={head.brand} commercialName={head.commercial_name} />;
+  return <VehicleImage brand={head.brand} commercialName={head.commercial_name} carFamily={head.car_family} />;
 }
 
-function VehicleImage({ brand, commercialName }) {
+function normalizeLookupText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function buildVehicleImageSearchName(brand, commercialName, carFamily) {
+  const rawName = String(commercialName || "").trim();
+  const family = String(carFamily || "").trim().toUpperCase();
+  if (!rawName) {
+    return "";
+  }
+
+  let cleaned = rawName
+    .replace(/\s*:\s*[A-Z0-9_-]+$/g, "")
+    .replace(/\s*,\s*[A-Z]{2,}\s*$/g, "")
+    .replace(/\s*,\s*[A-Z]{2,}\s*:\s*[A-Z0-9_-]+$/g, "")
+    .trim();
+
+  if (cleaned.includes(",")) {
+    const primary = cleaned.split(",")[0].trim();
+    if (primary) {
+      cleaned = primary;
+    }
+  }
+
+  const upperCleaned = cleaned.toUpperCase();
+  const codeLike = /^[A-Z0-9_-]{2,}$/.test(upperCleaned);
+  if (codeLike && (!family || upperCleaned === family)) {
+    return "";
+  }
+
+  if (!cleaned) {
+    return "";
+  }
+
+  return [brand, cleaned].filter(Boolean).join(" ").trim();
+}
+
+function VehicleImage({ brand, commercialName, carFamily }) {
   const [imageUrl, setImageUrl] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadImage() {
+      setLoadFailed(false);
+      const searchName = buildVehicleImageSearchName(brand, commercialName, carFamily);
+      if (!searchName) {
+        return;
+      }
       const queries = [
-        [brand, commercialName].filter(Boolean).join(" "),
-        commercialName,
-        brand,
+        searchName,
+        `${searchName} car`,
+        `${searchName} automobile`,
       ].filter(Boolean);
 
       for (const query of queries) {
         try {
           const response = await fetch(
-            `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrlimit=6&prop=pageimages|extracts&piprop=original&exintro=1&explaintext=1`
+            `https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrlimit=8&prop=pageimages|extracts&piprop=thumbnail&pithumbsize=900&exintro=1&explaintext=1`
           );
           if (!response.ok) {
             continue;
           }
           const payload = await response.json();
           const pages = Object.values(payload?.query?.pages ?? {});
-          const name = (commercialName || "").toLowerCase();
-          const brandName = (brand || "").toLowerCase();
-          const match = pages.find((page) => {
-            if (!page?.original?.source) {
-              return false;
-            }
-            const title = String(page.title || "").toLowerCase();
-            const extract = String(page.extract || "").toLowerCase();
-            const titleMatch = name && (title.includes(name) || name.includes(title));
-            const extractMatch = name && extract.includes(name);
-            const brandMatch = !brandName || title.includes(brandName) || extract.includes(brandName);
-            return (titleMatch || extractMatch) && brandMatch;
-          });
-          if (match?.original?.source) {
+          const brandName = normalizeLookupText(brand);
+          const normalizedSearchName = normalizeLookupText(searchName);
+          const name = normalizedSearchName.startsWith(`${brandName} `)
+            ? normalizedSearchName.slice(brandName.length).trim()
+            : normalizedSearchName;
+          const match = pages
+            .map((page) => {
+              const image = page?.thumbnail?.source;
+              if (!image) {
+                return null;
+              }
+              const title = normalizeLookupText(page.title || "");
+              const extract = normalizeLookupText(page.extract || "");
+              const exactTitleMatch = name && (title === name || title.includes(name));
+              const extractMatch = name && extract.includes(name);
+              const brandMatch = !brandName || title.includes(brandName) || extract.includes(brandName);
+              const vehicleHint =
+                title.includes("car") ||
+                title.includes("automobile") ||
+                title.includes("vehicle") ||
+                extract.includes("car") ||
+                extract.includes("automobile") ||
+                extract.includes("vehicle");
+              const genericPagePenalty =
+                title.includes("concept") ||
+                title.includes("motorsport") ||
+                title.includes("company") ||
+                title.includes("brand");
+              const score =
+                (exactTitleMatch ? 6 : 0) +
+                (extractMatch ? 2 : 0) +
+                (brandMatch ? 1 : 0) +
+                (vehicleHint ? 1 : 0) -
+                (genericPagePenalty ? 3 : 0);
+              return { image, score, exactTitleMatch, extractMatch, brandMatch };
+            })
+            .filter(Boolean)
+            .sort((left, right) => right.score - left.score)[0];
+          const isStrongMatch =
+            match &&
+            ((match.exactTitleMatch && match.brandMatch) || (match.exactTitleMatch && match.score >= 5) || match.score >= 7);
+          if (isStrongMatch && match?.image) {
             if (!cancelled) {
-              setImageUrl(match.original.source);
+              setImageUrl(match.image);
             }
             return;
           }
@@ -647,15 +721,24 @@ function VehicleImage({ brand, commercialName }) {
     return () => {
       cancelled = true;
     };
-  }, [brand, commercialName]);
+  }, [brand, commercialName, carFamily]);
 
-  if (imageUrl) {
-    return <img className="vehicle-hero-image" src={imageUrl} alt={`${brand || ""} ${commercialName || "vehicle"}`.trim()} />;
+  if (imageUrl && !loadFailed) {
+    return (
+      <img
+        className="vehicle-hero-image"
+        src={imageUrl}
+        alt={`${brand || ""} ${commercialName || "vehicle"}`.trim()}
+        referrerPolicy="no-referrer"
+        onError={() => setLoadFailed(true)}
+      />
+    );
   }
 
   return (
     <div className="vehicle-hero-fallback">
-      <span>{brand?.[0] || commercialName?.[0] || "V"}</span>
+      <div className="vehicle-hero-fallback-mark">{brand?.[0] || commercialName?.[0] || "V"}</div>
+      <p>{commercialName || brand || "Vehicle image unavailable"}</p>
     </div>
   );
 }
@@ -1112,11 +1195,6 @@ function VehicleBrief({ groups, query }) {
 
   return (
     <div className="insight-stack vehicle-brief-stack">
-      <div className="hero-insight">
-        <span className="insight-kicker">Vehicle Brief</span>
-        <strong>{groups.length === 1 ? groups[0][0].commercial_name || groups[0][0].car_family : `${groups.length} matched vehicles`}</strong>
-        <p>{query}</p>
-      </div>
       {groups.map((rows) => {
         const head = rows[0];
         const milestoneRow = resolveVehicleBriefMilestoneRow(rows);
@@ -1129,13 +1207,8 @@ function VehicleBrief({ groups, query }) {
             <div className="vehicle-hero">
               <div>
                 <div className="vehicle-identity">
-                  <h3>{head.commercial_name || head.car_family}</h3>
-                  <p>{[head.brand, head.car_family].filter(Boolean).join(" / ")}</p>
-                </div>
-                <div className="chip-row">
-                  {head.program ? <span className="data-chip">{head.program}</span> : null}
-                  {head.platform ? <span className="data-chip">{head.platform}</span> : null}
-                  {head.region_of_sales ? <span className="data-chip">{head.region_of_sales}</span> : null}
+                  <h3>{head.car_family || head.commercial_name}</h3>
+                  <p>{[head.brand, head.commercial_name].filter(Boolean).join(" - ")}</p>
                 </div>
               </div>
               {renderVehicleImage(head)}

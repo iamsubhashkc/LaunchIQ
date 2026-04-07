@@ -154,6 +154,9 @@ class LearningStore:
             "recent_feedback": recent_feedback,
         }
 
+    def preview_feedback(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._load_feedback_rows(limit=limit)
+
     def _load_feedback_rows(self, limit: int = 250) -> list[dict[str, Any]]:
         connection = duckdb.connect(str(self.duckdb_path), read_only=True)
         try:

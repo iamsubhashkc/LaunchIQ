@@ -81,3 +81,37 @@ export async function getFeedbackReport() {
   }
   return response.json();
 }
+
+export async function getDataCatalog() {
+  const response = await fetch(`${API_BASE_URL}/data/catalog`);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function getDataPreview(view, limit = 25) {
+  const response = await fetch(`${API_BASE_URL}/data/preview?view=${encodeURIComponent(view)}&limit=${encodeURIComponent(limit)}`);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function uploadLrpWorkbook(file) {
+  const filename = file?.name || "uploaded_lrp.xlsx";
+  const response = await fetch(`${API_BASE_URL}/data/upload?filename=${encodeURIComponent(filename)}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": file?.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+    body: file,
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Upload failed with status ${response.status}`);
+  }
+
+  return response.json();
+}

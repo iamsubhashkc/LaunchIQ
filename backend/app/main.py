@@ -2,19 +2,27 @@ from __future__ import annotations
 
 from io import BytesIO
 import re
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Query
+from fastapi import Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 
 from .clarification import merge_clarification_answers
+from .config import SAMPLE_LRP_XLSX
+from .data_loader import LaunchDataLoader
 from .execution import ExecutionEngine
 from .learning import LearningStore
 from .milestone_store import MilestoneStore
 from .models import (
     ClarifyRequest,
+    DataCatalogResponse,
+    DataPreviewResponse,
+    DataUploadResponse,
     ExportRequest,
     FeedbackRequest,
     FeedbackReportResponse,
@@ -46,6 +54,72 @@ milestone_store = MilestoneStore()
 @app.get("/health")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _active_data_loader() -> LaunchDataLoader:
+    return LaunchDataLoader(excel_path=SAMPLE_LRP_XLSX)
+
+
+def _format_frame_records(frame: pd.DataFrame, limit: int) -> list[dict[str, object]]:
+    preview = frame.head(limit).copy()
+    if preview.empty:
+        return []
+    source = preview.copy()
+    formatted = preview.copy().astype(object)
+    for column in source.columns:
+        if pd.api.types.is_datetime64_any_dtype(source[column]):
+            series = source[column].dt.strftime("%Y-%m-%dT%H:%M:%S").fillna("").astype(object)
+        else:
+            series = source[column].where(source[column].notna(), "").astype(object)
+        formatted.loc[:, column] = series
+    return formatted.to_dict(orient="records")
+
+
+def _data_view_payload(view: str, limit: int) -> tuple[str, pd.DataFrame]:
+    loaded = _active_data_loader().load()
+    if view == "vehicle":
+        return ("LRP Data", loaded.frame)
+    if view == "launch_event":
+        return ("Launch Events", loaded.events_frame)
+    if view == "feedback":
+        rows = learning_store.preview_feedback(limit=max(limit, 1))
+        return ("Feedback", pd.DataFrame(rows))
+    if view == "milestones":
+        rows = milestone_store.list_deliverables()
+        return ("Milestone Deliverables", pd.DataFrame(rows))
+    raise HTTPException(status_code=400, detail=f"Unsupported data view: {view}")
+
+
+def _catalog_response() -> DataCatalogResponse:
+    loaded = _active_data_loader().load()
+    feedback_rows = learning_store.feedback_report(limit_recent=1)
+    milestone_rows = milestone_store.list_deliverables()
+    views = [
+        ("vehicle", "LRP Data", loaded.frame),
+        ("launch_event", "Launch Events", loaded.events_frame),
+        ("feedback", "Feedback", pd.DataFrame(learning_store.preview_feedback(limit=1))),
+        ("milestones", "Milestone Deliverables", pd.DataFrame(milestone_rows)),
+    ]
+    summaries = []
+    for view_id, label, frame in views:
+        columns = list(frame.columns)
+        row_count = feedback_rows["total_feedback"] if view_id == "feedback" else len(frame.index)
+        summaries.append(
+            {
+                "view": view_id,
+                "label": label,
+                "row_count": row_count,
+                "column_count": len(columns),
+                "columns": columns,
+            }
+        )
+
+    return DataCatalogResponse(
+        source_kind=loaded.source_kind,
+        source_path=str(loaded.source_path),
+        workbook_present=SAMPLE_LRP_XLSX.exists(),
+        views=summaries,
+    )
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -120,6 +194,60 @@ def feedback(request: FeedbackRequest) -> FeedbackResponse:
 def feedback_report() -> FeedbackReportResponse:
     report = learning_store.feedback_report()
     return FeedbackReportResponse(**report)
+
+
+@app.get("/data/catalog", response_model=DataCatalogResponse)
+def data_catalog() -> DataCatalogResponse:
+    return _catalog_response()
+
+
+@app.get("/data/preview", response_model=DataPreviewResponse)
+def data_preview(
+    view: str = Query("vehicle"),
+    limit: int = Query(25, ge=1, le=200),
+) -> DataPreviewResponse:
+    label, frame = _data_view_payload(view, limit)
+    row_count = learning_store.feedback_report(limit_recent=1)["total_feedback"] if view == "feedback" else len(frame.index)
+    return DataPreviewResponse(
+        view=view,
+        label=label,
+        row_count=row_count,
+        limit=limit,
+        columns=list(frame.columns),
+        rows=_format_frame_records(frame, limit),
+    )
+
+
+@app.post("/data/upload", response_model=DataUploadResponse)
+async def data_upload(
+    request: Request,
+    filename: str = Query(..., min_length=1),
+) -> DataUploadResponse:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        raise HTTPException(status_code=400, detail="LaunchIQ only accepts .xlsx or .xlsm LRP workbooks.")
+
+    payload = await request.body()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Upload body was empty.")
+
+    temporary_path = SAMPLE_LRP_XLSX.with_name(f"{SAMPLE_LRP_XLSX.stem}.uploading{SAMPLE_LRP_XLSX.suffix}")
+    try:
+        temporary_path.write_bytes(payload)
+        loaded = LaunchDataLoader(excel_path=temporary_path).load()
+        temporary_path.replace(SAMPLE_LRP_XLSX)
+    except Exception as exc:
+        temporary_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Uploaded workbook could not be loaded: {exc}") from exc
+
+    return DataUploadResponse(
+        stored=True,
+        filename=filename,
+        destination=str(SAMPLE_LRP_XLSX),
+        source_kind=loaded.source_kind,
+        row_count=len(loaded.frame.index),
+        launch_event_count=len(loaded.events_frame.index),
+    )
 
 
 @app.post("/export")

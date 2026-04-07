@@ -169,6 +169,39 @@ class FeedbackReportResponse(BaseModel):
     recent_feedback: list[FeedbackReportEntry] = Field(default_factory=list)
 
 
+class DataViewSummary(BaseModel):
+    view: Literal["vehicle", "launch_event", "feedback", "milestones"]
+    label: str
+    row_count: int
+    column_count: int
+    columns: list[str] = Field(default_factory=list)
+
+
+class DataCatalogResponse(BaseModel):
+    source_kind: str
+    source_path: str
+    workbook_present: bool
+    views: list[DataViewSummary] = Field(default_factory=list)
+
+
+class DataPreviewResponse(BaseModel):
+    view: Literal["vehicle", "launch_event", "feedback", "milestones"]
+    label: str
+    row_count: int
+    limit: int
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DataUploadResponse(BaseModel):
+    stored: bool
+    filename: str
+    destination: str
+    source_kind: str
+    row_count: int
+    launch_event_count: int
+
+
 class MilestoneDeliverable(BaseModel):
     milestone_code: str
     milestone_label: str

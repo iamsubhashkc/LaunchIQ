@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { clarifyLaunchIQ, exportLaunchIQResult, getFeedbackReport, queryLaunchIQ, sendFeedback } from "./api";
+import { clarifyLaunchIQ, exportLaunchIQResult, getDataCatalog, getDataPreview, getFeedbackReport, queryLaunchIQ, sendFeedback, uploadLrpWorkbook } from "./api";
 import { AnswerCard } from "./components/AnswerCard";
 import { ChatInput } from "./components/ChatInput";
 import { ClarificationBox } from "./components/ClarificationBox";
+import { DataPanel } from "./components/DataPanel";
 import { ExplanationPanel } from "./components/ExplanationPanel";
 import { FeedbackButtons } from "./components/FeedbackButtons";
 import { FeedbackReportPanel } from "./components/FeedbackReportPanel";
@@ -23,6 +24,14 @@ export default function App() {
   const [feedbackReportLoading, setFeedbackReportLoading] = useState(false);
   const [feedbackReportError, setFeedbackReportError] = useState("");
   const [feedbackReportLoaded, setFeedbackReportLoaded] = useState(false);
+  const [dataCatalog, setDataCatalog] = useState(null);
+  const [dataPreview, setDataPreview] = useState(null);
+  const [activeDataView, setActiveDataView] = useState("vehicle");
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState("");
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [dataUploadStatus, setDataUploadStatus] = useState("");
+  const [dataUploading, setDataUploading] = useState(false);
   const [plannerMode, setPlannerMode] = useState(() => {
     if (typeof window === "undefined") {
       return "heuristic";
@@ -51,6 +60,12 @@ export default function App() {
     }
   }, [activeView, feedbackReportLoaded]);
 
+  useEffect(() => {
+    if (activeView === "data" && !dataLoaded) {
+      void loadDataWorkspace(activeDataView);
+    }
+  }, [activeDataView, activeView, dataLoaded]);
+
   async function loadFeedbackReport() {
     setFeedbackReportLoading(true);
     setFeedbackReportError("");
@@ -62,6 +77,48 @@ export default function App() {
       setFeedbackReportError(requestError.message);
     } finally {
       setFeedbackReportLoading(false);
+    }
+  }
+
+  async function loadDataWorkspace(view = activeDataView) {
+    setDataLoading(true);
+    setDataError("");
+    try {
+      const [catalogPayload, previewPayload] = await Promise.all([getDataCatalog(), getDataPreview(view)]);
+      setDataCatalog(catalogPayload);
+      setDataPreview(previewPayload);
+      setActiveDataView(view);
+      setDataLoaded(true);
+    } catch (requestError) {
+      setDataError(requestError.message);
+    } finally {
+      setDataLoading(false);
+    }
+  }
+
+  async function handleDataViewChange(view) {
+    setActiveDataView(view);
+    await loadDataWorkspace(view);
+  }
+
+  async function handleDataUpload(file) {
+    setDataUploading(true);
+    setDataError("");
+    setDataUploadStatus("");
+    try {
+      const payload = await uploadLrpWorkbook(file);
+      setDataUploadStatus(
+        `Uploaded ${payload.filename}. Active workbook refreshed with ${payload.row_count} rows and ${payload.launch_event_count} launch events.`
+      );
+      setResponse(null);
+      setPendingClarification(null);
+      setFeedbackState("");
+      setFeedbackSubmitted(false);
+      await loadDataWorkspace(activeDataView);
+    } catch (requestError) {
+      setDataError(requestError.message);
+    } finally {
+      setDataUploading(false);
     }
   }
 
@@ -171,6 +228,13 @@ export default function App() {
           >
             Feedback Report
           </button>
+          <button
+            type="button"
+            className={activeView === "data" ? "view-switch-button active" : "view-switch-button"}
+            onClick={() => setActiveView("data")}
+          >
+            Data
+          </button>
         </div>
         {response?.query ? (
           <div className="active-query-pill">
@@ -201,7 +265,7 @@ export default function App() {
         </div>
       ) : activeView === "analysis" ? (
         <div className="analysis-stage">
-          <ExplanationPanel plan={response?.plan} explanation={response?.explanation} summary={summary} />
+          <ExplanationPanel response={response} plan={response?.plan} explanation={response?.explanation} summary={summary} />
         </div>
       ) : activeView === "feedback" ? (
         <div className="analysis-stage">
@@ -210,6 +274,21 @@ export default function App() {
             loading={feedbackReportLoading}
             error={feedbackReportError}
             onRefresh={loadFeedbackReport}
+          />
+        </div>
+      ) : activeView === "data" ? (
+        <div className="analysis-stage">
+          <DataPanel
+            catalog={dataCatalog}
+            preview={dataPreview}
+            activeDataView={activeDataView}
+            onDataViewChange={handleDataViewChange}
+            loading={dataLoading}
+            error={dataError}
+            uploadStatus={dataUploadStatus}
+            uploading={dataUploading}
+            onUpload={handleDataUpload}
+            onRefresh={() => loadDataWorkspace(activeDataView)}
           />
         </div>
       ) : null}

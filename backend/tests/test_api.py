@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,7 +8,8 @@ from fastapi.testclient import TestClient
 import pandas as pd
 
 import app.main as main_module
-from app.data_loader import LaunchDataLoader
+from app.data_loader import ADAS_COLUMNS, CONNECTIVITY_COLUMNS, INFOTAINMENT_COLUMNS, LaunchDataLoader
+from app.execution import ExecutionEngine
 from app.learning import LearningStore
 from app.main import app
 from app.milestone_store import MilestoneStore
@@ -19,6 +21,40 @@ client = TestClient(app)
 
 def _loaded_frame():
     return LaunchDataLoader().load().frame.copy()
+
+
+def _build_test_workbook_bytes() -> bytes:
+    row = {
+        "Brand": "JEEP",
+        "Car Family": "ZX1",
+        "Commercial Name": "Test Vehicle",
+        "Carline Code w. Final Prod Zone": "ZX1-EU",
+        "Region of Sales": "EEU",
+        "Initial Prod Zone": "EU",
+        "Project Responsible Region": "EEU",
+        "Platform": "STLA-S",
+        "Program": "Pilot",
+        "PWT Energy and Technology": "BEV",
+        "SOPM": pd.Timestamp("2027-01-15"),
+        "MCA SOPM": pd.NaT,
+        "MCA 2 SOPM": pd.NaT,
+        "EOPM": pd.Timestamp("2030-12-01"),
+        "EEA": "Atlantis High",
+        "OTA": "FOTA",
+        "Volume 2027": 1200,
+        "Volume 2028": 1600,
+    }
+
+    for column in ADAS_COLUMNS + INFOTAINMENT_COLUMNS + CONNECTIVITY_COLUMNS:
+        row[column] = 0
+    row["TBM 2.0H"] = 1
+    row["IVI R1 H"] = 1
+
+    frame = pd.DataFrame([row])
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        frame.to_excel(writer, sheet_name="Sheet1", index=False)
+    return output.getvalue()
 
 
 def test_query_returns_distribution_for_region_question() -> None:
@@ -860,6 +896,55 @@ def test_feedback_report_summarizes_learning_records() -> None:
         finally:
             main_module.learning_store = original_store
             main_module.planner = original_planner
+
+
+def test_data_catalog_exposes_available_views() -> None:
+    response = client.get("/data/catalog")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["source_kind"] in {"lrp_excel", "demo_csv"}
+    assert {item["view"] for item in payload["views"]} == {"vehicle", "launch_event", "feedback", "milestones"}
+
+
+def test_data_preview_returns_vehicle_rows() -> None:
+    response = client.get("/data/preview?view=vehicle&limit=3")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["view"] == "vehicle"
+    assert payload["rows"]
+    assert "car_family" in payload["columns"]
+
+
+def test_data_upload_replaces_active_lrp_workbook() -> None:
+    original_path = main_module.SAMPLE_LRP_XLSX
+    original_executor = main_module.executor
+    with TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir) / "sample_lrp.xlsx"
+        main_module.SAMPLE_LRP_XLSX = temp_path
+        main_module.executor = ExecutionEngine(data_loader=LaunchDataLoader(excel_path=temp_path))
+        try:
+            response = client.post(
+                "/data/upload?filename=latest_lrp.xlsx",
+                content=_build_test_workbook_bytes(),
+                headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+            )
+            payload = response.json()
+            preview_response = client.get("/data/preview?view=vehicle&limit=5")
+            preview_payload = preview_response.json()
+
+            assert response.status_code == 200
+            assert payload["stored"] is True
+            assert payload["row_count"] == 1
+            assert payload["launch_event_count"] == 1
+            assert temp_path.exists()
+            assert preview_response.status_code == 200
+            assert preview_payload["rows"][0]["car_family"] == "ZX1"
+            assert preview_payload["rows"][0]["commercial_name"] == "Test Vehicle"
+        finally:
+            main_module.SAMPLE_LRP_XLSX = original_path
+            main_module.executor = original_executor
 
 
 def test_export_endpoint_returns_excel_workbook() -> None:
